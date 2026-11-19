@@ -298,6 +298,20 @@ Widening the kernels from 0.35 to 0.6 keeps the five-set mean within noise and r
 and other unseen perturbations ([page: Sim2real](docs/index.html#sim2real)). The shipped checkpoints use the
 project-page recipe (`std_scale 0.35`); retrain for the new defaults.
 
+## Citation
+
+If you use PartyMimic in research or products, please cite this repository, along with the methods and datasets you rely on (see [Attribution and license](#attribution-and-license) and [Data](#data)).
+
+```bibtex
+@software{partymimic2026,
+  title        = {PartyMimic: general humanoid motion tracking in minutes on one GPU},
+  author       = {jaggerShen and PartyMimic contributors},
+  year         = {2026},
+  url          = {https://github.com/Roboparty/PartyMimic},
+  license      = {MIT}
+}
+```
+
 ## Attribution and license
 
 PartyMimic is derived from [BlinkMimic](https://github.com/fuyichen0725/blinkmimic), which builds on
