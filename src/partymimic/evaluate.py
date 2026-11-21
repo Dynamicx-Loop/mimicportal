@@ -85,8 +85,8 @@ if args.dr_from:
 kin = Kinematics(robot, dev)
 motion = MotionLib.from_dir(args.motion_dir or robot.motion_dir, robot, kin, dev)
 _args_json = os.path.join(os.path.dirname(args.ckpt) if args.ckpt else args.run_dir, "args.json")
-motion.set_interface(json.load(open(_args_json)).get("interface", "joint") if os.path.exists(_args_json) else "joint",
-                     robot.tracked_bodies)
+_run_args = json.load(open(_args_json)) if os.path.exists(_args_json) else {}
+motion.set_interface(_run_args.get("interface", "joint"), robot.tracked_bodies, _run_args.get("obs_err") or "none")
 mdp = MDP(kin, motion, torch.tensor(robot.default_joint_pos_list(), device=dev), XiLayout(robot, dev).dim, robot.sensing)
 C = len(motion.names)
 N = C * args.repeats

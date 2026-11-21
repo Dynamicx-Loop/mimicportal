@@ -79,8 +79,7 @@ checkpoint's recipe (`--init` lists them when they are missing); the clip alloca
 ```bash
 mkdir -p deploy && uv run python tools/export_deploy_onnx.py checkpoints/g1_mlp.pt deploy/g1_mlp.onnx  # + .yaml
 SIM2REAL=<patched sim2real checkout> bash scripts/eval.sh checkpoints/g1_mlp.pt eval/g1_mlp g1    # see Evaluate
-F=(--std_scale 0.35 --obs_err kp --wrist_kernel 0.5 --wrist_payload 2
-   --v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5 --action_noise 0)
+F=(--obs_err kp --act_lag 0,0)   # the shipped checkpoints' recipe on top of the defaults
 bash scripts/train.sh logs/g1_ft --robot g1mj --motion_dir <a few clips> --init checkpoints/g1_mlp.pt "${F[@]}" --iterations 2000
 ```
 
@@ -177,8 +176,10 @@ at 22.6 and 23.4 GB. Checkpoints are written every 2,000 iterations (`ckpt_00200
 
 **Options.**
 
-- Defaults include `--muon_wd 0.1` and `--std_scale 0.6` (see [The recipe](#the-recipe)). The shipped checkpoints
-  were trained with the project-page recipe below (`std_scale 0.35`).
+- The defaults are the deployment recipe: the project-page recipe's kernels, guards and end-effector terms
+  (`--std_scale 0.35 --v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5 --action_noise 0 --wrist_kernel 0.5
+  --wrist_payload 2`) plus a command lag in training (`--act_lag 1,4`), without the clip allocation and the
+  `--obs_err kp` block. The shipped checkpoints were trained with the project-page recipe below (no command lag).
 - `--ref_enc xattn`: the cross-attention reference encoder. Lower error on Dance, Ground and Extreme (tables above)
   for 1.6x the training time. It needs more than 24 GB; on a 24 GB card add `--pi_batch 1024` (G1: 29 min).
 - `--interface sparse5`: the policy gets only the pelvis, head, wrist and ankle poses of the reference, no joint
@@ -189,17 +190,15 @@ at 22.6 and 23.4 GB. Checkpoints are written every 2,000 iterations (`ckpt_00200
   held-out G1 ground transitions went from 120–415 mm to 24–36 mm in 2k iterations. It does not help on short,
   highly dynamic clips.
 
-**The project-page recipe.** The PartyMimic rows of the [project page](docs/index.html#results) add three groups
-of options to the defaults (all off by default), with `--std_scale 0.35`:
+**The project-page recipe.** The PartyMimic rows of the [project page](docs/index.html#results) were trained
+before the command lag: the defaults with `--act_lag 0,0`, plus the clip allocation and `--obs_err kp`:
 
 ```bash
 # per-clip motion features for the clip allocation, once per library (RP1 runs read the G1 library's file)
 uv run python tools/motion_prior.py data/motions/g1_mix data/motions/g1_mix_prior.npz --robot g1mj
-R=(--std_scale 0.35
+R=(--act_lag 0,0
    --reset_alloc lp --start_alloc lp --alloc_lambda 0.15 --alloc_last 1 --cover_win 100000000
-   --motion_prior data/motions/g1_mix_prior.npz
-   --v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5 --action_noise 0
-   --wrist_kernel 0.5 --wrist_payload 2)
+   --motion_prior data/motions/g1_mix_prior.npz)
 bash scripts/train.sh logs/g1_page  --robot g1mj --motion_dir data/motions/g1_mix  --seed 0 --obs_err kp "${R[@]}"
 bash scripts/train.sh logs/rp1_page --robot rp1  --motion_dir data/motions/rp1_mix --seed 0 --obs_err kp "${R[@]}"
 # attention encoder: add --ref_enc xattn; sparse5: --interface sparse5 instead of --obs_err kp
@@ -217,6 +216,11 @@ bash scripts/train.sh logs/rp1_page --robot rp1  --motion_dir data/motions/rp1_m
   each wrist that the policy does not observe (`--wrist_payload 2`, drawn once per env, none in 25% of them) and, on
   the joint interface, the wrist / ankle / head error block that sparse5 observes (`--obs_err kp`, computed inside
   the exported ONNX from the same inputs). Under a 2 kg payload they cut the wrist error by about two thirds.
+- Command lag (default `--act_lag 1,4`): each control step the new joint targets reach the actuators 1–4 physics
+  substeps (5–20 ms) late, drawn per env. A topic-based deployment stack (the sim2real ZMQ pipeline: 5–25 ms random
+  latency) otherwise amplifies the policy's chatter and foot slip, most with the end-effector terms. RP1, 12k
+  iterations, 2 seeds, MotionDecode manipulation under that latency: ankle chatter 1.40° → 0.39° RMS, foot slip
+  3.75 → 1.03 cm/s, with the payload wrist error unchanged (17 mm).
 
 `uv run python -m partymimic.train -h` lists the remaining options.
 
@@ -284,7 +288,7 @@ earlier 9,173-clip library; the [page](docs/index.html#recipe) explains each fac
 |---|---|---|
 | Muon for policy and world model | `--pi_opt muon --wm_opt muon` | Adam instead: +10.7 mm |
 | Muon weight decay | `--muon_wd 0.1` | five-set mean +2.4 mm |
-| Tracking-reward kernels | `--std_scale 0.6` | 1.0: +5.5 mm; 0.35: more slip / jerk |
+| Tracking-reward kernels | `--std_scale 0.35` | 0.6: within noise; 1.0: +5.5 mm |
 | 32-step imagination | `--horizon 32` | 16 steps: +5.9 mm |
 | Reference-action skip | `--pi_ref_skip` | +5.6 mm |
 | Policy EMA | `--pi_ema 0.995` | +3.4 mm |
@@ -295,8 +299,9 @@ earlier 9,173-clip library; the [page](docs/index.html#recipe) explains each fac
 
 Of the official SuperMimic design choices ported onto this recipe, only `--muon_wd 0.1` clearly helps tracking.
 Widening the kernels from 0.35 to 0.6 keeps the five-set mean within noise and reduces foot slip under soft contact
-and other unseen perturbations ([page: Sim2real](docs/index.html#sim2real)). The shipped checkpoints use the
-project-page recipe (`std_scale 0.35`); retrain for the new defaults.
+and other unseen perturbations ([page: Sim2real](docs/index.html#sim2real)); the command lag removes most of that
+slip at 0.35, so the defaults keep 0.35. The shipped checkpoints were trained without the lag; retrain for the new
+defaults.
 
 ## Citation
 

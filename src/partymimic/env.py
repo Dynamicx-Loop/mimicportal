@@ -152,6 +152,8 @@ class TrackingSim:
         self.f = torch.zeros(self.N, dtype=torch.long, device=dev)
         self.ep_step = torch.zeros(self.N, dtype=torch.long, device=dev)
         self.a_prev = torch.zeros(self.N, self.J, device=dev)
+        self.lag_lo = self.lag_hi = 0
+        self.prev_target = torch.zeros(self.N, self.J, device=dev)
         self.start_bin = torch.zeros(self.N, dtype=torch.long, device=dev)
         self.ep_disc_ret = torch.zeros(self.N, device=dev)
         self.ep_ret = torch.zeros(self.N, device=dev)
@@ -392,6 +394,13 @@ class TrackingSim:
         return due
 
     # ------------------------------------------------------------------ step
+    def set_act_lag(self, lo: int, hi: int) -> None:
+        """Command lag of lo..hi physics substeps, drawn per control step and env (training randomization only): the
+        previous joint target holds for that many substeps of the step. The first step of an episode is not delayed,
+        as its a_prev (zero) does not describe the reset target."""
+        assert 0 <= lo <= hi <= DECIMATION, (lo, hi)
+        self.lag_lo, self.lag_hi = lo, hi
+
     def step(self, a: torch.Tensor) -> dict:
         out = self.step_core(a)
         if self.eval_mode:
@@ -413,8 +422,15 @@ class TrackingSim:
         a_prev = self.a_prev.clone()
         ep_step = self.ep_step.clone()
         target = self.default_q + xi[:, 1 : 1 + self.J] + self.alpha * a
-        self.robot.set_joint_position_target(target)
-        for _ in range(DECIMATION):
+        lagged = self.randomize and self.lag_hi > 0
+        if lagged:
+            lag = torch.randint(self.lag_lo, self.lag_hi + 1, (self.N,), device=self.device)
+            lag = torch.where(ep_step == 0, 0, lag).unsqueeze(-1)
+        else:
+            self.robot.set_joint_position_target(target)
+        for k in range(DECIMATION):
+            if lagged:
+                self.robot.set_joint_position_target(torch.where(k < lag, self.prev_target, target))
             self.scene.write_data_to_sim()
             self.sim.step()
             self.scene.update(PHYSICS_DT)
@@ -422,6 +438,8 @@ class TrackingSim:
                 gyro, accel = self._imu_site() if self.spec.sensing.imu is not None else (None, None)
                 self._obs_state = self.pipe.filter_update(self._obs_state, self.robot.data.joint_vel, gyro, accel, self.xi,
                                                           PHYSICS_DT, noise=self.randomize)  # fmt: skip
+        if lagged:
+            self.prev_target.copy_(target)
         S1 = self.state()
         f1 = f + 1
         r, terms = self.mdp.reward(S1, f1, a, a_prev, terms=True)

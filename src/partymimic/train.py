@@ -47,11 +47,11 @@ parser.add_argument("--interface", type=str, default="joint", choices=("joint", 
 parser.add_argument("--obs_err", type=str, default="none", choices=("none", "kp"),
                     help="joint interface: kp = sparse5's wrist / ankle / head error block against the current reference "
                          "frame as a decoder input (newest step only, as sparse5's); computed from the deployed inputs")
-parser.add_argument("--wrist_kernel", type=float, default=0.0,
+parser.add_argument("--wrist_kernel", type=float, default=0.5,
                     help="weight of an extra wrist position kernel in the tracking reward (0 = off)")
 parser.add_argument("--wrist_std_mult", type=float, default=0.5,
                     help="--wrist_kernel: its std as this x the body position std (after --std_scale)")
-parser.add_argument("--wrist_payload", type=float, default=0.0,
+parser.add_argument("--wrist_payload", type=float, default=2.0,
                     help="hidden payload randomization: up to this many kg at each wrist, once per env (0 = off)")
 parser.add_argument("--payload_p0", type=float, default=0.25, help="--wrist_payload: share of envs without payload")
 parser.add_argument("--kp_skip", action=ON, default=None,
@@ -64,10 +64,13 @@ parser.add_argument("--kp_aux", type=float, default=None,
                          "predicting the goal frames' joint positions (rad, mean squared error)")
 parser.add_argument("--gamma", type=float, default=0.99)
 parser.add_argument("--lam", type=float, default=0.95)
-parser.add_argument("--action_noise", type=float, default=0.1)
+parser.add_argument("--action_noise", type=float, default=0.0)
+parser.add_argument("--act_lag", type=str, default="1,4",
+                    help="min,max command lag in physics substeps (5 ms), drawn per control step and env in training "
+                         "(0,0 = off); without it the policy amplifies the latency of a topic-based deployment stack")
 parser.add_argument("--amp", type=str, default="bf16", choices=["none", "bf16"], help="autocast dtype for MLP matmuls")
 # ---- reward and resets ----
-parser.add_argument("--std_scale", type=float, default=0.6,
+parser.add_argument("--std_scale", type=float, default=0.35,
                     help="training reward only: scale of the body / root position and orientation kernel widths "
                          "(evaluation keeps SuperMimic's reward)")
 parser.add_argument("--contact_reward", type=float, default=0.25,
@@ -102,16 +105,16 @@ parser.add_argument("--cover_start", type=int, default=0, help="first allocation
 parser.add_argument("--cover_prior", type=int, default=1, choices=(0, 1),
                     help="1 = feasible x angular-speed score of --motion_prior, 0 = feasible only")
 # ---- long-training stability (all off by default)
-parser.add_argument("--v_clip", type=float, default=0.0,
+parser.add_argument("--v_clip", type=float, default=10.0,
                     help="clip of the critic's value to [-c, c] wherever it is used (bootstrap, GAE targets, critic loss, "
                          "SIL baseline): no gradient beyond the largest return; 0 = off (the largest return is 0.1 / (1 - gamma) = 10)")
-parser.add_argument("--v_clip_raw", action="store_true",
+parser.add_argument("--v_clip_raw", action=ON, default=True,
                     help="with --v_clip, as official SuperMimic: the GAE targets are computed from the unclipped value "
                          "and then clipped, and the critic loss is on the unclipped output, so an output beyond the "
                          "clip is still pulled back (the bootstrap and the other uses stay clipped)")
-parser.add_argument("--wm_guard", type=float, default=0.0,
+parser.add_argument("--wm_guard", type=float, default=5.0,
                     help="skip a world-model update whose loss exceeds this x its running mean (0 = off)")
-parser.add_argument("--v_guard", type=float, default=0.0,
+parser.add_argument("--v_guard", type=float, default=5.0,
                     help="skip a critic minibatch step whose loss exceeds this x its running mean (0 = off)")
 parser.add_argument("--ckpt_at", type=str, default="",
                     help="comma-separated iterations with an extra policy checkpoint (evaluation along a long run)")
@@ -187,7 +190,7 @@ if args.kp_aux is None:
     args.kp_aux = 1.0 if args.interface == "sparse5" else 0.0
 assert args.interface == "sparse5" or not (args.kp_skip or args.kp_aux > 0), "--kp_skip / --kp_aux: --interface sparse5 only"
 assert not (args.resume and args.init), "--resume or --init"
-assert not args.v_clip_raw or args.v_clip > 0, "--v_clip_raw needs --v_clip"
+args.v_clip_raw = args.v_clip_raw and args.v_clip > 0  # --v_clip 0 turns both off
 
 import torch
 import torch.nn as nn
@@ -242,7 +245,8 @@ widths = lambda s: tuple(int(x) for x in s.split(","))  # noqa: E731
 networks.RunningNorm.no_sync = True
 rotations.ELEMENTWISE = True
 
-wm = WorldModel(J, layout.dim, use_prev_action=robot.has_action_delay, hidden=widths(args.wm_hidden),
+ACT_LAG = widths(args.act_lag)
+wm = WorldModel(J, layout.dim, use_prev_action=robot.has_action_delay or ACT_LAG[1] > 0, hidden=widths(args.wm_hidden),
                 structured=args.wm_structured, dt=CONTROL_DT).to(dev)  # fmt: skip
 pi = Policy(mdp.obs_dim, GOAL_DIM, J, hist=Hh, enc_hidden=widths(args.enc_hidden), dec_hidden=widths(args.dec_hidden),
             **policy_kwargs(vars(args), robot)).to(dev)
@@ -845,6 +849,7 @@ mdp.reward, mdp.termination, mdp.obs = torch.compile(mdp.reward), torch.compile(
 motion.goal = torch.compile(motion.goal)
 env = TrackingSim(sim_cfg, args.num_envs, robot, motion, mdp, dev, gamma=args.gamma, fail_reset=args.fail_reset,
                   div_k=args.div_k, div_tau=args.div_tau)
+env.set_act_lag(*ACT_LAG)
 CKPT_AT = {int(x) for x in args.ckpt_at.split(",") if x}
 PROFILE = os.environ.get("PM_PROFILE") == "1"  # time the physics substep and the phases of an iteration
 PROF_T = {"collect": 0.0, "wm": 0.0, "pi": 0.0, "n": 0}
