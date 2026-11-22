@@ -37,8 +37,13 @@ def median_clip(split_dir: str, stem: str | None = None) -> dict:
             "end": int(r["termination_idx"]) if r["terminated"] == "1" else None}
 
 
-def scene_model(xml: str) -> mujoco.MjModel:
+def scene_model(xml: str, boxes: int = 0, box_rgba=(0.66, 0.60, 0.52, 1.0)) -> mujoco.MjModel:
+    """The robot on a checker floor; ``boxes`` adds that many mocap boxes ``terrain<i>`` (tools/terrain_video.py)."""
     spec = mujoco.MjSpec.from_file(xml)
+    for i in range(boxes):
+        b = spec.worldbody.add_body(name=f"terrain{i}", mocap=True)  # at the origin: the scene extent sets the lighting
+        b.add_geom(name=f"terrain{i}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.05, 0.05, 0.05], rgba=list(box_rgba),
+                   contype=0, conaffinity=0)
     tex = spec.add_texture(name="grid", type=mujoco.mjtTexture.mjTEXTURE_2D, builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
                            rgb1=[0.82, 0.84, 0.86], rgb2=[0.72, 0.74, 0.77], width=512, height=512)
     spec.add_texture(name="sky", type=mujoco.mjtTexture.mjTEXTURE_SKYBOX, builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,

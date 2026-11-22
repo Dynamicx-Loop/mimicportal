@@ -411,8 +411,10 @@
       <td>Orthogonalized updates keep the rare motions' nearly orthogonal gradients from being drowned by the majority.</td></tr>
   <tr><td>Muon weight decay</td><td><code>--muon_wd 0.1</code></td><td class="n">&minus;2.4 mm five-set mean</td>
       <td>torch.optim.Muon's default decoupled decay; the only official SuperMimic choice that clearly helps PartyMimic.</td></tr>
-  <tr><td>Reward kernels</td><td><code>--std_scale 0.6</code></td><td class="n">0.35: +smoothness cost; 1.0: +5.5 mm</td>
-      <td>Narrower than BeyondMimic's 1.0 so BPTT still has slope at cm-level errors; wider than 0.35 so the policy is less aggressive for deployment (see <a href="#sim2real">Sim2real</a>).</td></tr>
+  <tr><td>Reward kernels</td><td><code>--std_scale 0.35</code></td><td class="n">0.6: within noise; 1.0: +5.5 mm</td>
+      <td>Narrower than BeyondMimic's 1.0 so BPTT still has slope at cm-level errors.</td></tr>
+  <tr><td>Command lag in training</td><td><code>--act_lag 1,4</code></td><td class="n">RP1 under a 10&ndash;20 ms command delay: ankle chatter 0.39&deg; &rarr; 1.37&deg;, foot slip 1.03 &rarr; 2.22 cm/s</td>
+      <td>New joint targets reach the actuators 5&ndash;20 ms late in training, as on a topic-based deployment stack; without it the policy turns the delay into chatter (see <a href="#sim2real">Sim2real</a>).</td></tr>
   <tr><td>Horizon 32</td><td><code>--horizon 32</code></td><td class="n">16 steps: +5.9 mm</td>
       <td>Shorter chains lean on &nabla;<sub>s</sub>V, which is only loosely fit.</td></tr>
   <tr><td>Reference-action skip</td><td><code>--pi_ref_skip</code></td><td class="n">+5.6 mm</td>
