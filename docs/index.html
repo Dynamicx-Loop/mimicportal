@@ -74,7 +74,20 @@
   nav.toc a.lab img { width: 100%; max-width: 160px; display: block; }
   html { scroll-behavior: smooth; }
   h2[id], h3[id], header[id] { scroll-margin-top: 16px; }
-  nav.toc { display: none; }
+  @media (max-width: 1179px) {
+    h2[id], h3[id], header[id] { scroll-margin-top: 56px; }
+    nav.toc { position: sticky; top: 0; z-index: 10; display: flex; gap: 2px; align-items: center; overflow-x: auto;
+              white-space: nowrap; padding: 6px 10px; background: rgba(255, 255, 255, .96); border-bottom: 1px solid var(--line);
+              font-size: .85rem; scrollbar-width: none; }
+    nav.toc::-webkit-scrollbar { display: none; }
+    nav.toc a { flex: none; padding: 4px 9px; border-radius: 6px; color: var(--ink); text-decoration: none; }
+    nav.toc a.lab, nav.toc a.sub { display: none; }
+    nav.toc a.brand { font-weight: 800; }
+    nav.toc a.brand span { color: var(--red); }
+    nav.toc a.on { background: #fdecec; color: var(--red); font-weight: 600; }
+    nav.toc a.brand.on { background: none; color: var(--ink); }
+    nav.toc a.code { background: var(--ink); color: #fff; font-weight: 600; }
+  }
   @media (min-width: 1180px) {
     body { padding-left: 210px; }
     nav.toc { display: block; position: fixed; top: 0; left: 0; bottom: 0; width: 210px; overflow-y: auto;
@@ -888,11 +901,21 @@
 (() => {
   const links = [...document.querySelectorAll("nav.toc a[href^='#']")];
   const targets = links.map(a => document.getElementById(a.getAttribute("href").slice(1)));
+  const nav = document.querySelector("nav.toc");
+  const bar = matchMedia("(max-width: 1179px)");
+  let last = -1;
   const spy = () => {
     let k = 0;
     targets.forEach((t, i) => { if (t && t.getBoundingClientRect().top < 140) k = i; });
+    if (bar.matches) while (k > 0 && links[k].classList.contains("sub")) k--;  // the bar shows sections only
     links.forEach((a, i) => a.classList.toggle("on", i === k));
+    if (bar.matches && k !== last) {
+      const a = links[k];
+      nav.scrollTo({left: a.offsetLeft - (nav.clientWidth - a.offsetWidth) / 2, behavior: "smooth"});
+    }
+    last = k;
   };
+  bar.addEventListener("change", () => { last = -1; spy(); });
   addEventListener("scroll", spy, {passive: true});
   spy();
 })();
