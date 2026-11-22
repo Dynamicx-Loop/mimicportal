@@ -1,17 +1,19 @@
 """Static box terrain inferred from the reference motions, with a physical self-check (the --terrain pipeline).
 
 From each clip's kinematics (10 Hz, the robot's MJCF with a floor plane at z 0; collision distances up to 1 m):
-  step:   a still foot (< 0.15 m/s) that is the body's lowest point, more than 4 cm up for >= 0.3 s (boxes, stairs), and
+  step:   a still foot (< 0.15 m/s) that is the body's lowest point, more than 4 cm up (boxes, stairs), and
           frames with the whole body off the floor without vertical motion for >= 0.4 s;
   seat:   >= 1 s with the pelvis still and low (< 0.89 standing height) and the center of mass > 6 cm outside the
-          floor support: the pelvis' lowest point is the seat height;
+          floor support: the lowest point of the pelvis and the thighs is the seat height;
   lean:   the same with the pelvis high: still geoms off the floor on the side of the offset carry it; the back or
           shoulders on it, or hands at shoulder height or above: a wall (thin vertical box); hands lower: a table top;
   ladder: >= 1 s with a foot and a hand still and raised and the body off the floor: rungs at the heights the feet
           stand and the hands rest on, plus two rails;
   stairs: more than two step heights: solid steps along a common axis, as wide as all footprints.
-Every support height needs points from >= 0.3 s of the clip (brief floats of retargeted motions add no box); supports
-lower than MIN_TOP are left out (the check runs on the boxes that are trained).
+Every support height needs points from >= 0.3 s of the clip (a jump's apex or a brief float of a retargeted motion adds
+no box) unless brief footfalls climb more than two heights (jogged stairs); supports lower than MIN_TOP are left out
+(the check runs on the boxes that are trained). Floor support: contacts within 3 cm of the lowest point (retargeted
+feet may hover a few cm).
 Boxes are shrunk (walls pushed back) away from body geoms inside them. A clip passes the self-check when no box holds
 a body geom (ladders: the hands hold the rungs; other limbs for at most 0.3 s) and every stretch of more than 0.8 s
 with the lowest point off the floor rests on a box top. Clips that fail (also those with no inferred box and an
@@ -183,11 +185,11 @@ def one(path: str):
             if FLOOR in (c.geom1, c.geom2):
                 g = c.geom2 if c.geom1 == FLOOR else c.geom1
                 if g in gi:
-                    glow[t, gi[g]] = min(glow[t, gi[g]], c.dist) if c.dist < glow[t, gi[g]] else c.dist
-                    if c.dist < 0.03:
-                        fl.append(c.pos[:2].copy())
+                    glow[t, gi[g]] = min(glow[t, gi[g]], c.dist)  # capsules touch with both ends
+                    fl.append((c.pos[0], c.pos[1], c.dist))
         low[t] = glow[t].min()
-        fl = np.array(fl).reshape(-1, 2)
+        fl = np.array(fl).reshape(-1, 3)
+        fl = fl[fl[:, 2] < max(low[t], 0.0) + 0.03, :2]  # retargeted feet may hover a few cm
         com[t] = d.subtree_com[0, :2]
         com_off[t] = hull_dist(fl, com[t])
         hullc[t] = fl.mean(0) if len(fl) else rp[t, :2]
@@ -200,14 +202,8 @@ def one(path: str):
     # step: a still foot that is the lowest point and off the floor; whole body lifted without vertical motion
     fi = [gi[g] for g in FOOT]
     stand = (gv[:, fi] < 0.15) & (glow[:, fi] > 0.04) & (glow[:, fi] <= low[:, None] + 0.01)
-    for side in {BODY[g] for g in FOOT}:  # stood on for >= 0.3 s in a row (not the brief floats of retargeted gaits)
-        cols = [j for j, g in enumerate(FOOT) if BODY[g] == side]
-        for s, e in runs(stand[:, cols].any(1), 3):
-            for t in range(s, e):
-                for j in cols:
-                    if stand[t, j]:
-                        k = fi[j]
-                        horiz.append((gpos[t, k, 0], gpos[t, k, 1], glow[t, k], t))
+    for t, j in zip(*np.nonzero(stand)):
+        horiz.append((gpos[t, fi[j], 0], gpos[t, fi[j], 1], glow[t, fi[j]], t))
     for s, e in runs((low > 0.03) & (vz < 0.15), int(0.4 * HZ)):
         for t in range(s, e):
             for k in np.nonzero(glow[t] < low[t] + 0.03)[0]:
@@ -217,7 +213,8 @@ def one(path: str):
     pi_ = [gi[g] for g in PELVIS]
     for s, e in runs(seat, HZ):
         for t in range(s, e):
-            horiz.append((rp[t, 0], rp[t, 1], glow[t, pi_].min(), t))
+            p = glow[t, pi_].min()  # the seat carries the pelvis and the thighs (lower on some robots)
+            horiz.append((rp[t, 0], rp[t, 1], glow[t][glow[t] >= p - 0.08].min(), t))
     # hand / back support
     lean = (low <= 0.03) & pel_still & (com_off > 0.06) & (rp[:, 2] >= 0.89 * H)
     shoulder_z = None
@@ -278,8 +275,9 @@ def one(path: str):
         pts = np.array(horiz)
         order = np.argsort(pts[:, 2])
         clusters = [pts[idx] for idx in np.split(order, np.nonzero(np.diff(pts[order, 2]) > 0.06)[0] + 1)]
-        # held for >= 0.3 s: a one-frame float of the whole body (a retargeting glitch) gives every foot geom a point
-        clusters = [c for c in clusters if len(np.unique(c[:, 3])) >= 3 and np.median(c[:, 2]) >= 0.04]
+        clusters = [c for c in clusters if np.median(c[:, 2]) >= 0.04]
+        if sum(np.median(c[:, 2]) >= MIN_TOP for c in clusters) <= 2:  # not brief footfalls up a staircase (jogging)
+            clusters = [c for c in clusters if len(np.unique(c[:, 3])) >= 3]  # not a jump's apex or a float
         if len(clusters) > 2:  # a staircase: steps across its direction, as wide as all footprints (>= 0.8 m)
             allxy = np.concatenate([c[:, :2] for c in clusters])
             c0 = allxy.mean(0)

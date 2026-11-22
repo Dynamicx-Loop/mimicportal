@@ -104,10 +104,15 @@
   <a href="#videos">Sim2sim videos</a>
   <a class="sub" href="#fast">Fast Extreme clips</a>
   <a href="#speed">LAFAN speed</a>
+  <a href="#adaptive">Adaptive mechanisms</a>
+  <a class="sub" href="#adapt-data">Data selection</a>
+  <a class="sub" href="#adapt-sampling">Sampling</a>
+  <a class="sub" href="#adapt-terrain">Terrain</a>
   <a href="#recipe">Recipe</a>
   <a href="#supermimic">SuperMimic ablation</a>
   <a class="sub" href="#long">Training to 320k</a>
   <a href="#sim2real">Sim2real</a>
+  <a class="sub" href="#latency">Command lag</a>
   <a class="sub" href="#real">Real robot</a>
   <a href="#use">Use it</a>
   <a href="#agent">Agent use</a>
@@ -124,9 +129,10 @@
   <div class="pills"><span class="hot"><i>Fast</i>28 min on 1&times; RTX 4090 (24 GB)</span>
     <span><i>Diverse data</i>41 h</span><span><i>Generalizes</i>5 held-out sets</span>
     <span><i>Precise</i>21.4 | 16.3 mm</span><span><i>2 architectures</i>MLP | attention</span>
-    <span><i>2 modalities</i>joints | 5 keypoints</span></div>
+    <span><i>2 modalities</i>joints | 5 keypoints</span>
+    <span><i>Terrain</i>full BONES-SEED 99% in 13 min</span></div>
   <div class="links"><a href="https://github.com/Roboparty/PartyMimic">Code</a><a class="mob" href="#results">Results</a><a class="mob" href="#sparse">Sparse keypoints</a>
-    <a class="mob" href="#videos">Videos</a><a class="mob" href="#speed">LAFAN speed</a><a class="mob" href="#supermimic">SuperMimic ablation</a><a class="mob" href="#sim2real">Sim2real</a></div>
+    <a class="mob" href="#videos">Videos</a><a class="mob" href="#speed">LAFAN speed</a><a class="mob" href="#adaptive">Adaptive</a><a class="mob" href="#supermimic">SuperMimic ablation</a><a class="mob" href="#sim2real">Sim2real</a></div>
 </header>
 <main>
 
@@ -192,8 +198,10 @@
   Against the prior defaults of the first release (<code>std_scale 0.35</code>, no Muon weight decay), like for like (training mix,
   12,000 iterations, 2 seeds, absolute-heading error, MLP), the earlier version of this recipe (earlier guards, no
   end-effector terms) already tracks at least as precisely, five-set mean 45.1 vs 45.1 mm on G1 and 46.4 vs 47.8 mm on RP1.
-  The default <code>--std_scale 0.6</code> gives up tracking (48.3 and 48.1 mm) for smoother motion with less foot slip
-  under deployment-like perturbations (<a href="#recipe">Recipe</a>, <a href="#sim2real">Sim2real</a>).
+  The training defaults are the deployment recipe: these kernels, guards and end-effector terms plus a 5&ndash;20 ms
+  command lag in training (<code>--act_lag 1,4</code>), without the clip allocation and <code>--obs_err kp</code>; under a
+  topic-based deployment latency they cut RP1 ankle chatter from 1.40&deg; to 0.39&deg; and foot slip from 3.75 to
+  1.03 cm/s (<a href="#latency">Sim2real</a>).
   Scored by the <a href="https://egalahad.github.io/sim2real/leaderboard/">sim2real leaderboard</a>
   MuJoCo sim2sim evaluator after ONNX export: every clip played from start to end, failure when the pelvis height error
   exceeds 0.3 m or the gravity direction error exceeds 0.8. Error is the local body position error over the tracked part
@@ -400,6 +408,83 @@
   (48 GB), i9-14900K. The two-GPU methods share the x1 link of the second GPU. XMimic AL runs its probe process on the
   learner GPU under CUDA MPS, as in its README.</p>
 
+<h2 id="adaptive">Adaptive mechanisms: data, sampling, terrain</h2>
+<p>Three parts of PartyMimic adapt to the library instead of being tuned per dataset: which clips to train on, where
+  the resets go, and what each clip is performed on. All three use the same 1-s motion windows and only the robot's
+  own model, so G1 and RP1 go through the same code.</p>
+
+<h3 id="adapt-data">Diversity-selected data</h3>
+<p>The 1-s windows of the 71,132 non-mirrored BONES-SEED clips (144 h) are clustered, and clips are picked evenly over
+  the clusters (<code>tools/diversity</code>). A 10k selection covers <b>every</b> content label and motion type of
+  the pool; a random 10k misses 44% of the contents. This selection is the BONES-SEED part of the training library;
+  SuperMimic trains on all of BONES-SEED.</p>
+<div class="scroll"><table>
+  <tr><th>10k BONES-SEED clips</th><th class="n">Hours</th><th class="n">Content labels (of 3,742)</th><th class="n">Motion types (of 146)</th><th class="n">Pool window to nearest selected, p50</th></tr>
+  <tr><td>Random</td><td class="n">18.7</td><td class="n">2,106</td><td class="n">114</td><td class="n">0.108</td></tr>
+  <tr class="ours"><td>Diversity-selected, duration-matched</td><td class="n">22.3</td><td class="n"><b>3,742</b></td><td class="n"><b>146</b></td><td class="n">0.098</td></tr>
+  <tr class="ours"><td>Diversity-selected (training library)</td><td class="n">36.9</td><td class="n"><b>3,742</b></td><td class="n"><b>146</b></td><td class="n"><b>0.079</b></td></tr>
+</table></div>
+<p class="note">Content labels and motion types are BONES-SEED's own annotations; the last column is the RMS feature
+  distance from each pool window to its nearest window in the selection (lower: the selection represents the pool
+  better).</p>
+
+<h3 id="adapt-sampling">Adaptive sampling</h3>
+<p>Resets are spread over motion clusters instead of over duration (<code>--div_k 24</code>), with a share for the
+  clips that failed recently. Ground motions are short and rare: by duration they get 8% of the resets, by cluster
+  30%, and removing the cluster balance costs Ground 6&ndash;19 mm. SuperMimic samples by return; on PartyMimic's library
+  (G1, 10,731 clips, 12,000 iterations, five-set mean error) that sampler alone is clearly worse, and kept inside the
+  cluster and failure shares it is within noise:</p>
+<div class="scroll"><table>
+  <tr><th>Reset sampler</th><th class="n">Seeds</th><th class="n">Five-set mean (mm)</th></tr>
+  <tr class="ours"><td>PartyMimic: cluster-balanced + failure share</td><td class="n">5</td><td class="n"><b>54.7</b></td></tr>
+  <tr><td>SuperMimic ReturnSampler inside the cluster / failure shares</td><td class="n">1</td><td class="n">54.0</td></tr>
+  <tr class="sig-worse"><td>SuperMimic ReturnSampler alone</td><td class="n">1</td><td class="n">60.1</td></tr>
+</table></div>
+
+<h3 id="adapt-terrain">Automatic terrain</h3>
+<p>Many BONES-SEED clips are performed on something: a 50 cm box, a chair, stairs, a wall, a ladder. On flat ground
+  they cannot be tracked. <code>--terrain</code> plays every clip through the robot's MJCF, reads the supports off its
+  contacts (a still raised foot: boxes and steps; the pelvis resting with the center of mass outside the feet: seats;
+  back or hands against something: walls; feet and hands raised together: ladders), builds up to 16 static boxes per
+  clip and checks them physically: no body inside a box, and no stretch of more than 0.8 s off the floor that does
+  not rest on a box top. Clips that fail are never trained (743 of 130,026 G1 clips, 1,346 RP1). The simulator places
+  the boxes at every reset; the world model and the critic get a height scan, the policy stays blind, so the
+  deployed inputs are unchanged.</p>
+<div class="scroll"><table>
+  <tr><th>Full BONES-SEED, one RTX 4090, every clip from its first frame</th><th class="n">Iterations</th><th class="n">Training</th><th class="n">All clips</th><th class="n">Terrain clips</th></tr>
+  <tr class="robot"><td colspan="5">Unitree G1 &middot; 129,205 clips, 4,902 with terrain</td></tr>
+  <tr><td>PartyMimic, flat ground</td><td class="n">30,000</td><td class="n">2.0 h</td><td class="n">96.96%</td><td class="n">26.4%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">3,000</td><td class="n">13 min</td><td class="n"><b>99.05%</b></td><td class="n">89.1%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">30,000</td><td class="n">1.3 h</td><td class="n">99.65%</td><td class="n">94.8%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code> (best checkpoint)</td><td class="n">170,000</td><td class="n">6.8 h</td><td class="n"><b>99.80%</b></td><td class="n"><b>97.2%</b></td></tr>
+  <tr class="robot"><td colspan="5">RoboParty RP1 &middot; 127,702 clips (R2R retargets), 4,934 with terrain</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">3,000</td><td class="n">20 min</td><td class="n"><b>99.01%</b></td><td class="n">83.8%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">100,000</td><td class="n">4.3 h</td><td class="n"><b>99.57%</b></td><td class="n">93.5%</td></tr>
+</table></div>
+<p class="note">Completion: the clip is played to its end without the pelvis height error exceeding 0.3 m or the gravity
+  direction error exceeding 0.8 (<code>tools/eval_chunks.py</code>). G1 stays at or above 99% from 3,000 iterations on;
+  RP1 from 80,000 on (one dip to 98.1% at 70k on fast jogging turns). Stairs and ladders remain the hard part (G1 at
+  170k: 71% and 25%); the ladder is a crude model and the policy cannot see the next rung. Both runs used an earlier
+  version of the check (821 G1 and 2,324 RP1 clips dropped). For reference, the SuperMimic paper reports 25 failed
+  clips of 129,514 after 3 h, under its own setup and evaluation, which we have not reproduced. Per-category tables
+  are in the <a href="https://github.com/Roboparty/PartyMimic#terrain-the-full-bones-seed">README</a>.</p>
+<div class="vrow">Unitree G1</div>
+<div class="videos">
+  <div><video src="static/videos/terrain_g1_chair.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Chair: sit down</div>
+  <div><video src="static/videos/terrain_g1_stairs.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Stairs: climb up</div>
+  <div><video src="static/videos/terrain_g1_box.mp4" autoplay muted loop playsinline controls preload="metadata"></video>50 cm box: step up with a crate</div>
+  <div><video src="static/videos/terrain_g1_ladder.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Ladder</div>
+</div>
+<div class="vrow">RoboParty RP1</div>
+<div class="videos">
+  <div><video src="static/videos/terrain_rp1_chair.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Chair: sit down</div>
+  <div><video src="static/videos/terrain_rp1_stairs.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Stairs: climb up</div>
+  <div><video src="static/videos/terrain_rp1_wall.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Wall: lean on it</div>
+  <div><video src="static/videos/terrain_rp1_ladder.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Ladder</div>
+</div>
+<p class="note">Training clips with their inferred boxes, rolled out in MuJoCo by the terrain-trained policies; the robot
+  is solid, the reference a blue ghost. Examples chosen by us; the success rates are in the table above.</p>
+
 <h2 id="recipe">The PartyMimic recipe and what matters most</h2>
 <p>PartyMimic trains with BPTT: the policy gradient is the derivative of an analytic tracking reward through 32 imagined
   steps of a learned world model, closed by the critic's value gradient &nabla;<sub>s</sub>V. The defaults of
@@ -564,7 +649,7 @@
   <tr><th>Change on PartyMimic</th><th class="n">Seeds</th><th class="n">Five-set mean</th><th class="n">Time</th><th class="n">VRAM</th><th>Verdict</th></tr>
   <tr><td>Prior defaults (<code>std_scale 0.35</code>, <code>muon_wd 0</code>)</td><td class="n">5</td><td class="n">54.7</td><td class="n">0.44 h</td><td class="n">22 GB</td><td>baseline</td></tr>
   <tr class="sig-better"><td><b>+ <code>--muon_wd 0.1</code></b></td><td class="n">4</td><td class="n"><b>52.3</b></td><td class="n">0.45 h</td><td class="n">22 GB</td><td>better tracking</td></tr>
-  <tr class="sig-better"><td><b>+ <code>--muon_wd 0.1 --std_scale 0.6</code> (final)</b></td><td class="n">4</td><td class="n"><b>54.3</b></td><td class="n">0.52 h</td><td class="n">22 GB</td><td>same tracking, better sim2real</td></tr>
+  <tr class="neutral"><td>+ <code>--muon_wd 0.1 --std_scale 0.6</code></td><td class="n">4</td><td class="n">54.3</td><td class="n">0.52 h</td><td class="n">22 GB</td><td>same tracking, smoother</td></tr>
   <tr class="neutral"><td>+ policy LN-GELU</td><td class="n">3</td><td class="n">53.0</td><td class="n">0.51 h</td><td class="n">26 GB</td><td>noise / cost</td></tr>
   <tr class="neutral"><td>+ soft-termination max</td><td class="n">2</td><td class="n">53.2</td><td class="n">0.44 h</td><td class="n">22 GB</td><td>noise</td></tr>
   <tr class="neutral"><td>+ <code>v_max</code> clamp</td><td class="n">1</td><td class="n">53.2</td><td class="n">0.45 h</td><td class="n">22 GB</td><td>noise</td></tr>
@@ -576,9 +661,10 @@
   <tr class="sig-worse"><td>+ action-rate penalty &minus;0.25</td><td class="n">4</td><td class="n">56.9</td><td class="n">0.47 h</td><td class="n">22 GB</td><td>smoother, worse tracking</td></tr>
   <tr class="sig-worse"><td>Official SuperMimic (ported, fp32)</td><td class="n">2</td><td class="n">68.6</td><td class="n">1.60 h</td><td class="n">32 GB</td><td>far worse</td></tr>
 </table></div>
-<p class="note">Only Muon weight decay clearly improves PartyMimic. Widening the reward kernel to 0.6 keeps the
-  five-set mean within noise of the prior defaults and is the change that improves foot-slip and action smoothness
-  under deployment-like perturbations (next section). Everything else from the official release is noise or worse
+<p class="note">Only Muon weight decay clearly improves PartyMimic; the defaults keep it. Widening the reward kernel to
+  0.6 keeps the five-set mean within noise of the prior defaults and improves foot slip and action smoothness under
+  deployment-like perturbations (<a href="#sim2real">Sim2real</a>); the defaults keep 0.35 and train with a command lag
+  instead, which targets the chatter a deployment stack's latency causes. Everything else from the official release is noise or worse
   on this library; dropping PartyMimic's failure / diversity reset shares hurts a lot.</p>
 
 <h3 id="long">Training to 320k: what the long-run recipe rests on</h3>
@@ -715,16 +801,33 @@
       <th class="n">Combo slip cm/s</th><th class="n">Soft-foot slip cm/s</th></tr>
   <tr><td>Prior defaults</td><td class="n">2</td><td class="n">98.2 / 18.1</td><td class="n">70</td><td class="n">5.72</td><td class="n">8.10</td></tr>
   <tr><td>+ Muon wd 0.1</td><td class="n">2</td><td class="n">98.3 / 17.9</td><td class="n">68</td><td class="n">5.66</td><td class="n">8.22</td></tr>
-  <tr class="sig-better"><td><b>Final (<code>muon_wd 0.1</code>, <code>std_scale 0.6</code>)</b></td><td class="n">4</td><td class="n">98.2 / 20.8</td><td class="n"><b>58</b></td><td class="n"><b>5.14</b></td><td class="n"><b>7.05</b></td></tr>
+  <tr class="sig-better"><td>+ Muon wd 0.1, <code>std_scale 0.6</code></td><td class="n">4</td><td class="n">98.2 / 20.8</td><td class="n"><b>58</b></td><td class="n"><b>5.14</b></td><td class="n"><b>7.05</b></td></tr>
   <tr><td>+ kernel 1.0</td><td class="n">2</td><td class="n">98.3 / 24.9</td><td class="n">52</td><td class="n">4.81</td><td class="n">6.49</td></tr>
   <tr><td>+ action-rate &minus;0.25</td><td class="n">4</td><td class="n">98.0 / 18.7</td><td class="n">46</td><td class="n">5.29</td><td class="n">7.36</td></tr>
   <tr><td>Official SuperMimic (ported)</td><td class="n">2</td><td class="n">97.7 / 33.8</td><td class="n">51</td><td class="n">5.40</td><td class="n">6.73</td></tr>
 </table></div>
 <p class="note">Completion stays &ge;96% under delay 20&nbsp;ms, PD&times;0.75, push and friction 0.25 for every method.
   Switching the solver to the official 10 iterations changes nothing; soft-foot contact is where the prior recipe
-  slips more than the ported official policy. The final recipe closes most of that gap while keeping tracking far
-  ahead of the port (20.8 vs 33.8&nbsp;mm nominal). Shipped checkpoints were trained with <code>std_scale 0.35</code>;
-  retrain with the new defaults for the numbers above.</p>
+  slips more than the ported official policy. The 0.6 kernel closes most of that gap while keeping tracking far
+  ahead of the port (20.8 vs 33.8&nbsp;mm nominal). The released defaults keep <code>std_scale 0.35</code> and add the
+  command lag below.</p>
+
+<h3 id="latency">Deployment latency: command lag in training</h3>
+<p>A topic-based deployment stack (the sim2real ZMQ pipeline: 5&ndash;25 ms random latency) delivers joint targets late.
+  A policy trained without that delay turns it into ankle chatter and foot slip, most with the end-effector terms.
+  The defaults train with a command lag (<code>--act_lag 1,4</code>: new targets reach the actuators 5&ndash;20 ms late,
+  drawn per env). RP1, 12k iterations, 2 seeds, MotionDecode manipulation, actions 10&ndash;20 ms late and states
+  5&ndash;10 ms old:</p>
+<div class="scroll"><table>
+  <tr><th>Recipe</th><th class="n">Ankle chatter (&deg;)</th><th class="n">Joint-target jerk (rad/s&sup2;)</th><th class="n">Foot slip (cm/s)</th></tr>
+  <tr><td>Project-page recipe (no lag)</td><td class="n">1.40</td><td class="n">109</td><td class="n">3.75</td></tr>
+  <tr><td>+ command lag</td><td class="n">0.63</td><td class="n">33</td><td class="n">1.42</td></tr>
+  <tr class="ours"><td><b>Defaults</b> (lag, no clip allocation, no <code>--obs_err kp</code>)</td><td class="n"><b>0.39</b></td><td class="n"><b>27</b></td><td class="n"><b>1.03</b></td></tr>
+  <tr class="ref"><td>Defaults without latency</td><td class="n">0.32</td><td class="n">24</td><td class="n">0.98</td></tr>
+</table></div>
+<p class="note">Ankle chatter: high-frequency ankle-pitch RMS, 90th percentile over clips. Over all four MotionDecode
+  splits under the same latency the defaults keep jerk at 113 rad/s&sup2; and slip at 6.7 cm/s, against 350 and
+  13.3 cm/s for the project-page recipe.</p>
 
 <h3 id="real">Real-robot validation</h3>
 <div class="real">
@@ -749,6 +852,8 @@
   <li>Default (MLP): <code>bash scripts/train.sh logs/g1 --robot g1mj --motion_dir data/motions/g1_mix</code></li>
   <li>Attention encoder: add <code>--ref_enc xattn</code> (24 GB cards: also <code>--pi_batch 1024</code>).</li>
   <li>Sparse keypoints: add <code>--interface sparse5</code>; export with <code>tools/export_deploy_onnx.py</code>.</li>
+  <li>Full BONES-SEED with terrain: <code>tools/data/build_library.sh bones_full</code>, then add
+    <code>--terrain</code> (boxes inferred and checked on the first run; RP1: <code>rp1_full</code>).</li>
   <li>Two GPUs: add <code>--pipeline</code>. Fine-tune on a few clips before deployment: <code>--init &lt;run&gt;/last.pt</code>.</li>
   <li>Trained checkpoints (MLP, joint references): <code>checkpoints/g1_mlp.pt</code> and <code>checkpoints/rp1_mlp.pt</code>.</li>
   <li>Diversity analysis of a library: <code>tools/diversity/analyze.py</code>.</li>

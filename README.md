@@ -14,8 +14,8 @@ trained checkpoints are included.
 - **Two architectures:** an MLP reference encoder (default) or a cross-attention encoder (`--ref_enc xattn`).
 - **Two modalities:** joint-angle references (default) or the pelvis and five keypoints (`--interface sparse5`).
 - **Terrain:** `--terrain` infers the boxes, seats, stairs, walls and ladders each clip needs, checks them physically
-  and trains on them; on the full filtered BONES-SEED (129,205 G1 clips) 99% of all clips succeed after 3,000
-  iterations (13 min on one RTX 4090), where training without terrain stays at 96.8%.
+  and trains on them; on the full filtered BONES-SEED 99% of all clips succeed after 3,000 iterations, G1 (129,205
+  clips) in 13 min and RP1 (127,702) in 20 min on one RTX 4090, where training without terrain stays at 96.8%.
 
 PartyMimic is a model-based learner in the SuperMimic family. It fits an online MLP world model, trains the policy
 by backpropagating through 32 imagined steps of that model, and uses a critic beyond the horizon. Project page:
@@ -282,11 +282,29 @@ checkpoint on every clip:
 | 10,000 | 29 min | 99.34% | 92.6% | 93.3% | 98.1% | 44.8% | 27.3% | 100% |
 | 50,000 | 2.1 h | 99.69% | 96.0% | 97.5% | 98.6% | 53.4% | 20.5% | 100% |
 | 170,000 | 6.8 h | **99.80%** | 97.2% | 98.6% | 98.7% | 70.7% | 25.0% | 100% |
+| 200,000 | 7.9 h | 99.60% | 97.3% | 98.1% | 99.3% | 77.6% | 25.0% | 100% |
 
-Without `--terrain` the same code on the same 130,026 clips stays at 96.5–96.8% from 2k to 30k iterations (about
-4,200 failed clips, mostly those performed on something). The stairs (58 clips) and ladders (44) remain the hard
-part: the ladder is a crude model (rungs and rails at the heights the hands and feet rest), and the policy cannot
-see where the next step is. This run used an earlier version of the check (821 clips dropped).
+All clips stay at or above 99% from the 3,000-iteration checkpoint on. Without `--terrain` the same code stays at
+96.5–96.8% from 2k to 30k iterations; on the same 129,205 clips that is 96.96% at 30k, and 26.4% of the terrain
+clips, against 99.65% and 94.8% with terrain at 30k. The stairs (58 clips) and ladders (44) remain the hard part:
+the ladder is a crude model (rungs and rails at the heights the hands and feet rest), and the policy cannot see
+where the next step is. For reference, the SuperMimic paper reports 25 failed clips of 129,514 after 3 h of
+training, under its own setup and evaluation; we have not reproduced that protocol.
+
+RP1, full BONES-SEED retargeted by R2R (127,702 clips after the check, 4,934 with terrain), same command with
+`--robot rp1`:
+
+| Iterations | Training | All clips | Terrain clips | 50 cm box | Chair / sit | Stairs | Ladder | Wall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 15 min | 96.69% | 42.9% | 27.8% | 82.7% | 6.3% | 23.3% | 100% |
+| 3,000 | 20 min | **99.01%** | 83.8% | 81.7% | 96.2% | 6.3% | 23.3% | 100% |
+| 10,000 | 37 min | 99.34% | 90.8% | 90.7% | 97.4% | 56.3% | 23.3% | 100% |
+| 40,000 | 1.8 h | 99.50% | 92.6% | 92.2% | 98.9% | 56.3% | 23.3% | 100% |
+| 100,000 | 4.3 h | **99.57%** | 93.5% | 93.2% | 98.9% | 62.5% | 23.3% | 100% |
+
+RP1 first reaches 99% at 3,000 iterations and stays there from 80k on (70k dips to 98.1% on fast jogging turns,
+recovered at 80k). Both runs used an earlier version of the check (821 G1 and 2,324 RP1 clips dropped); the
+current check drops 743 and 1,346.
 
 ## Evaluate, export, visualize
 
