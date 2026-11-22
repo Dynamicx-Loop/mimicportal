@@ -183,6 +183,13 @@ parser.add_argument("--lr_decay_len", type=int, default=300)
 parser.add_argument("--lr_decay_by", type=int, default=1400,
                     help="with --lr_decay_ret: start the decay at this iteration at the latest, also if the training return "
                          "has not reached --lr_decay_ret (0 = no deadline)")
+parser.add_argument("--terrain", action="store_true",
+                    help="static box terrain of the clips (<motion_dir>/terrain.json, partymimic.terrain): placed in the "
+                         "simulator, seen by the world model and critic as a height scan (not by the policy); built by "
+                         "partymimic.terrain_infer when missing, which also moves the clips failing its check out of the library")
+parser.add_argument("--terrain_soft", type=float, default=0.0,
+                    help="edge width (m) of the boxes in the height scan (sigmoid edges: gradients of the scan in x, y "
+                         "and heading through the world model); 0: hard edges. Contacts and rewards use the hard boxes")
 args = parser.parse_args()
 if args.kp_skip is None:
     args.kp_skip = args.interface == "sparse5"
@@ -209,6 +216,10 @@ from partymimic.objective import actor_objective
 from partymimic.mdp import flatten_state
 from partymimic.robot import get_robot
 from partymimic.sensing import ObsPipeline
+import partymimic.terrain as terrain
+
+terrain.enabled = args.terrain
+terrain.SOFT = args.terrain_soft
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -225,8 +236,14 @@ if args.wrist_payload > 0:
                                                               payload_p0=args.payload_p0))
 J = robot.num_joints
 kin = Kinematics(robot, dev)
+if args.terrain and not os.path.exists(os.path.join(args.motion_dir or robot.motion_dir, "terrain.json")):
+    from partymimic.terrain_infer import build as build_terrain
+
+    print("terrain_infer:", json.dumps(build_terrain(args.motion_dir or robot.motion_dir, args.robot)), flush=True)
 motion = MotionLib.from_dir(args.motion_dir or robot.motion_dir, robot, kin, dev)
 motion.set_interface(args.interface, robot.tracked_bodies, args.obs_err)
+if args.terrain:
+    print(f"terrain: {motion.set_terrain(args.motion_dir or robot.motion_dir)} of {len(motion.names)} clips", flush=True)
 layout = XiLayout(robot, dev)
 normalize_xi = layout.normalize
 _rc, _s = RewardCfg(), args.std_scale

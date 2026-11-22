@@ -8,6 +8,11 @@
 #                                           after g1: G1 -> RP1 R2R of both, -> data/motions/rp1_mix, data/testsets/extreme_rp1
 #   HHT=... SIM2REAL=<sim2real> tools/data/build_library.sh rp1_md
 #                                           RP1 copy of the MotionDecode held-out splits -> $SIM2REAL/datasets/motiondecode_rp1
+#   tools/data/build_library.sh bones_full  the filtered full BONES-SEED (130,026 clips of manifests/bones_seed_full_f.txt,
+#                                           mirrors included; lean npz, 12 GB) -> data/motions/g1_bones_full, for --terrain
+#   HHT=... tools/data/build_library.sh rp1_full
+#                                           after bones_full: its 65,374 originals G1 -> RP1 by R2R, the mirrors mirrored
+#                                           on RP1 -> data/motions/rp1_bones_full
 # Needs tools/download_data.sh first. BONES-SEED is gated on Hugging Face: accept its terms, then `hf auth login` or
 # set HF_TOKEN. Disk: the 23.5 GB BONES archive (delete it after the bones step), 13 GB of G1 npz; RP1: 5 GB of csv,
 # 1 GB of npz.
@@ -73,6 +78,15 @@ mix() {
 
 g1() { lafan; bones; kungfu; xtreme; mix; }
 
+bones_full() {
+  log "BONES-SEED full (download 23.5 GB, the 130,026 clips of manifests/bones_seed_full_f.txt, lean npz)"
+  [ -f $RAW/bones/g1.tar.gz ] || "${HFD[@]}" bones-studio/seed g1.tar.gz --local-dir $RAW/bones
+  tar -xzf $RAW/bones/g1.tar.gz -C $RAW/bones -T manifests/bones_seed_full_f.txt
+  $PY $T/prep_motions.py --format bones --src $RAW/bones --list manifests/bones_seed_full_f.txt --lean \
+    --workers "${WORKERS:-16}" --out $M/g1_bones_full
+  log "G1 full library $M/g1_bones_full: $(ls $M/g1_bones_full/*.npz | wc -l) clips"
+}
+
 rp1() {
   : "${HHT:?set HHT to a human-humanoid-tools checkout}"
   local R=$RAW/rp1
@@ -90,6 +104,18 @@ rp1() {
   $PY $T/rp1_data.py hdxset $R/extreme_rp1csv $TS/extreme_g1 $TS/extreme_rp1
   $PY $T/rp1_floor.py $R/floor_extreme.json $TS/extreme_rp1
   log "RP1 library $M/rp1_mix: $(ls $M/rp1_mix | wc -l) clips; Extreme: $(wc -l < $TS/extreme_rp1/motion-list.txt) clips"
+}
+
+rp1_full() {
+  : "${HHT:?set HHT to a human-humanoid-tools checkout}"
+  local R=$RAW/rp1_full
+  log "RP1 full library: the originals of $M/g1_bones_full -> R2R -> npz, mirrors by the RP1 mirror map"
+  mkdir -p $R/orig && find "$PWD/$M/g1_bones_full" -name '*.npz' ! -name '*_M.npz' -exec ln -sf {} $R/orig/ \;
+  $PY $T/rp1_data.py g1csv $R/orig $R/g1csv --shards "$P"
+  retarget $R/g1csv $R/rp1csv 50
+  $PY $T/rp1_data.py npz $R/rp1csv $M/rp1_bones_full
+  $PY $T/rp1_data.py mirror $M/rp1_bones_full $M/g1_bones_full
+  log "RP1 full library $M/rp1_bones_full: $(ls $M/rp1_bones_full/*.npz | wc -l) clips"
 }
 
 rp1_md() {

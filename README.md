@@ -13,6 +13,9 @@ trained checkpoints are included.
 - **Precise:** 21.4 mm on the held-out manipulation clips (G1), the lowest error of every method we compared.
 - **Two architectures:** an MLP reference encoder (default) or a cross-attention encoder (`--ref_enc xattn`).
 - **Two modalities:** joint-angle references (default) or the pelvis and five keypoints (`--interface sparse5`).
+- **Terrain:** `--terrain` infers the boxes, seats, stairs, walls and ladders each clip needs, checks them physically
+  and trains on them; on the full filtered BONES-SEED (129,205 G1 clips) 99% of all clips succeed after 3,000
+  iterations (13 min on one RTX 4090), where training without terrain stays at 96.8%.
 
 PartyMimic is a model-based learner in the SuperMimic family. It fits an online MLP world model, trains the policy
 by backpropagating through 32 imagined steps of that model, and uses a critic beyond the horizon. Project page:
@@ -156,6 +159,13 @@ ground). The Extreme set is retargeted the same way (`data/testsets/extreme_rp1`
 process; `P` processes run in parallel over the GPUs in `GPUS`. The RP1 copy of the MotionDecode tests:
 `HHT=... SIM2REAL=... tools/data/build_library.sh rp1_md` (into `$SIM2REAL/datasets/motiondecode_rp1`).
 
+**Full BONES-SEED (terrain training).** `tools/data/build_library.sh bones_full` extracts the 130,026 clips of
+[`manifests/bones_seed_full_f.txt`](manifests/bones_seed_full_f.txt): all G1 clips of BONES-SEED, mirrors included,
+without those more than 3 cm below the floor or faster than 25 rad/s at a joint (the filter of the subset above;
+142,220 → 130,026 clips, 264 h). It writes lean npz (joint angles and pelvis pose, 12 GB) to
+`data/motions/g1_bones_full`. `HHT=... tools/data/build_library.sh rp1_full` retargets its 65,374 originals to RP1 as
+above and writes the mirrors by RP1's mirror map (`rp1_data.py mirror`), into `data/motions/rp1_bones_full`.
+
 **Motion format.** `--motion_dir` takes a directory of `.npz` clips, each with `fps` (50), `joint_pos` `[T, J]` in
 the robot's joint order (`src/partymimic/<robot>/`), and the pelvis pose as the first body of `body_pos_w`
 `[T, B, 3]` and `body_quat_w` `[T, B, 4]` (wxyz). PartyMimic computes the other bodies by forward kinematics.
@@ -219,10 +229,64 @@ bash scripts/train.sh logs/rp1_page --robot rp1  --motion_dir data/motions/rp1_m
 - Command lag (default `--act_lag 1,4`): each control step the new joint targets reach the actuators 1–4 physics
   substeps (5–20 ms) late, drawn per env. A topic-based deployment stack (the sim2real ZMQ pipeline: 5–25 ms random
   latency) otherwise amplifies the policy's chatter and foot slip, most with the end-effector terms. RP1, 12k
-  iterations, 2 seeds, MotionDecode manipulation under that latency: ankle chatter 1.40° → 0.39° RMS, foot slip
-  3.75 → 1.03 cm/s, with the payload wrist error unchanged (17 mm).
+  iterations, 2 seeds, MotionDecode manipulation under the slow-host latency (actions 10–20 ms late, states 5–10 ms
+  old): the project-page recipe has ankle chatter 1.40° (high-frequency ankle-pitch RMS, 90th percentile over clips),
+  joint-target jerk 109 rad/s² and foot slip 3.75 cm/s; the command lag alone brings them to 0.63°, 33 and 1.42 cm/s; the defaults (lag,
+  no clip allocation, no `--obs_err kp`) on the mirrored and screened library to 0.39°, 27 and 1.03 cm/s, the same as
+  without latency (0.32°, 24, 0.98 cm/s). Over all four splits the defaults keep jerk 113 and slip 6.7 cm/s under
+  that latency against 350 and 13.3 cm/s for the project-page recipe ([page: Sim2real](docs/index.html#sim2real)).
 
 `uv run python -m partymimic.train -h` lists the remaining options.
+
+## Terrain: the full BONES-SEED
+
+Many clips are performed on something: a 50 cm box, a chair, stairs, a wall, a ladder. On flat ground they cannot be
+tracked. `--terrain` gives every clip the static boxes it needs:
+
+```bash
+tools/data/build_library.sh bones_full                       # data/motions/g1_bones_full, 130,026 clips
+bash scripts/train.sh logs/g1_terrain --robot g1mj --motion_dir data/motions/g1_bones_full --terrain \
+  --iterations 200000 --ckpt_every 10000
+# every clip once from its first frame, in chunks of worlds (the evaluation protocol of tools/eval_batch.py)
+uv run python tools/eval_chunks.py --ckpt logs/g1_terrain/ckpt_010000.pt --motion_dir data/motions/g1_bones_full \
+  --out eval/g1_terrain_010000.json
+```
+
+- **Inferred terrain, checked.** When `<motion_dir>/terrain.json` is missing, training first runs
+  `partymimic.terrain_infer` (3–4 min for 130k clips on 24 processes; alone:
+  `python -m partymimic.terrain_infer --robot g1mj --motion_dir <dir> [--dry_run]`). It plays every clip through the
+  robot's own MJCF and reads the supports off its contacts: a still foot raised above the floor (boxes, steps),
+  the pelvis resting with the center of mass outside the feet (seats), the back or hands against something
+  (walls, tables), feet and hands raised together (ladders), more than two step heights (a staircase). Each clip
+  then gets up to 16 boxes, and a physical check: no body inside a box, and no stretch of more than 0.8 s with the
+  lowest point off the floor that does not rest on a box top. The clips that fail are moved to `<motion_dir>_dropped`
+  and never trained; `terrain_report.json` lists every inferred support and its result. It uses only the robot's
+  model, so G1 and RP1 libraries go through the same code: on the full library it drops 743 G1 clips (0.57%) and
+  1,346 RP1 clips (1.04%; R2R's retargets float more often).
+- **Who sees it.** The simulator places the clip's boxes at every reset. The world model and the critic get an
+  11 × 5 height scan around the robot (1.5 m along the heading, 0.6 m across), so imagined steps follow the terrain;
+  the policy stays blind and reads the terrain from its reference alone, so the deployed inputs are unchanged.
+  `--terrain_soft 0.03` gives the scanned box edges a 3 cm sigmoid width, so the scan has gradients along the ground
+  as well (contacts and rewards keep the hard boxes).
+- **Memory.** Above 20M reference frames the tracked-body states are recomputed by forward kinematics from the root
+  and joints instead of stored (`PM_LAZY_FK=0/1` forces it): the full library would otherwise take about 62 GB. A G1
+  terrain run reserves 26.3 GB (24.8 GB without terrain): a 48 GB card.
+
+G1, full filtered BONES-SEED (129,205 clips after the check, 4,902 with terrain), seed 0, one RTX 4090, every
+checkpoint on every clip:
+
+| Iterations | Training | All clips | Terrain clips | 50 cm box | Chair / sit | Stairs | Ladder | Wall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 8 min | 96.62% | 46.6% | 33.3% | 89.6% | 0.0% | 20.5% | 100% |
+| 3,000 | 13 min | **99.05%** | 89.1% | 91.0% | 96.8% | 13.8% | 20.5% | 100% |
+| 10,000 | 29 min | 99.34% | 92.6% | 93.3% | 98.1% | 44.8% | 27.3% | 100% |
+| 50,000 | 2.1 h | 99.69% | 96.0% | 97.5% | 98.6% | 53.4% | 20.5% | 100% |
+| 170,000 | 6.8 h | **99.80%** | 97.2% | 98.6% | 98.7% | 70.7% | 25.0% | 100% |
+
+Without `--terrain` the same code on the same 130,026 clips stays at 96.5–96.8% from 2k to 30k iterations (about
+4,200 failed clips, mostly those performed on something). The stairs (58 clips) and ladders (44) remain the hard
+part: the ladder is a crude model (rungs and rails at the heights the hands and feet rest), and the policy cannot
+see where the next step is. This run used an earlier version of the check (821 clips dropped).
 
 ## Evaluate, export, visualize
 

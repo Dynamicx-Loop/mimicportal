@@ -17,6 +17,7 @@ from mjlab.scene import Scene, SceneCfg
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 
+from . import terrain
 from .dr import DomainRandomizer, XiLayout
 from .mdp import MAX_STEP_REWARD, MDP, flatten_state
 from .motion import CONTROL_DT, MotionLib
@@ -65,6 +66,7 @@ def make_scene_cfg(robot: RobotSpec, num_envs: int) -> SceneCfg:
         env_spacing=0.0,
         terrain=TerrainEntityCfg(terrain_type="plane"),
         entities={"robot": robot.robot_cfg()},
+        spec_fn=terrain.add_to_spec if terrain.enabled else None,
     )
 
 
@@ -132,7 +134,15 @@ class TrackingSim:
         self.layout = XiLayout(robot, dev)
         assert self.layout.dim == mdp.xi_dim, (self.layout.dim, mdp.xi_dim)
         self.xi = torch.zeros(self.N, self.layout.dim, device=dev)
+        if terrain.enabled:  # per-world box sizes; the boxes share the ground's friction (the robot's is the pair's)
+            mj = self.sim.mj_model
+            self.terrain_geom = torch.tensor([mj.geom(f"terrain{i}").id for i in range(terrain.BOXES)], device=dev)
+            self.terrain_mocap = torch.tensor([int(mj.body_mocapid[mj.body(f"terrain{i}").id]) for i in range(terrain.BOXES)],
+                                              device=dev)
+            self.sim.expand_model_fields(("geom_aabb", "geom_rbound", "geom_size"))
         self.randomizer = DomainRandomizer(robot, self.layout, self, eval_mode=not self.randomize)
+        if terrain.enabled:
+            self.randomizer.ground_geoms = torch.cat((self.randomizer.ground_geoms, self.terrain_geom))
         self.randomizer.startup(self.xi)
 
         # ---- sensing (stateful signal chain only if the robot defines one) ----
@@ -268,6 +278,10 @@ class TrackingSim:
         self.ep_disc_ret.index_fill_(0, env_ids, 0.0)
         self.ep_ret.index_fill_(0, env_ids, 0.0)
         self.randomizer.reset(self.xi, env_ids)  # after scene.reset, which would restore actuator defaults
+        if terrain.enabled:
+            boxes = self.motion.terrain_boxes[self.motion.clip_id[frames]]
+            self.xi[env_ids, self.layout.slices["terrain"]] = boxes.flatten(-2)
+            self._place_terrain(boxes, env_ids)
         self.obs_fresh.index_fill_(0, env_ids, True)
 
     def reset_masked(self, mask: torch.Tensor, frames: torch.Tensor | None = None):
@@ -326,7 +340,27 @@ class TrackingSim:
         self.ep_disc_ret.masked_fill_(d, 0.0)
         self.ep_ret.masked_fill_(d, 0.0)
         self.randomizer.reset_masked(self.xi, d)
+        if terrain.enabled:
+            sl = self.layout.slices["terrain"]
+            boxes = self.motion.terrain_boxes[self.motion.clip_id[frames]]
+            self.xi[:, sl] = torch.where(d1, boxes.flatten(-2), self.xi[:, sl])
+            self._place_terrain(self.xi[:, sl].unflatten(-1, (terrain.BOXES, terrain.BOX)))
         self.obs_fresh |= d
+
+    def _place_terrain(self, boxes: torch.Tensor, env_ids: torch.Tensor | None = None) -> None:
+        """Boxes [n, terrain.BOXES, terrain.BOX] into worlds env_ids (None: all worlds, as fixed-size writes)."""
+        model, data = self.sim.model, self.sim.data
+        half, yaw = boxes[..., 3:6], boxes[..., 6] / 2
+        zero = torch.zeros_like(yaw)
+        quat = torch.stack((yaw.cos(), zero, zero, yaw.sin()), -1)
+        pos = boxes[..., :3] + (self.scene.env_origins if env_ids is None else self.scene.env_origins[env_ids]).unsqueeze(-2)
+        w = slice(None) if env_ids is None else env_ids[:, None]
+        g, mc = self.terrain_geom, self.terrain_mocap
+        model.geom_size[w, g] = half
+        model.geom_rbound[w, g] = half.norm(dim=-1)
+        model.geom_aabb[w, g, 1] = half
+        data.mocap_pos[w, mc] = pos
+        data.mocap_quat[w, mc] = quat
 
     def step_tail_masked(self, out: dict) -> dict:
         """step_tail() without host-side ids (capturable): bin statistics of the ended episodes and reset_masked. Instead

@@ -5,6 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from . import terrain
 from .mdp import inv_dim, invariant_features
 from .rotations import mm3, mv3, so3_exp, yaw_mat
 
@@ -127,6 +128,8 @@ class WorldModel(nn.Module):
         # the net predicts velocity increments plus small position corrections)
         self.structured, self.dt = structured, dt
         self.in_dim = inv_dim(num_j) + num_j * (2 if use_prev_action else 1) + xi_dim
+        if terrain.enabled:
+            self.in_dim += terrain.SCAN_DIM - terrain.XI_DIM
         self.out_dim = 3 + 3 + 3 + 3 + num_j + num_j
         n_out = 4 * self.out_dim + 2 if contact_modes else self.out_dim
         self.net = mlp(self.in_dim, list(hidden), n_out, act=nn.SiLU, layer_norm=True)
@@ -139,6 +142,7 @@ class WorldModel(nn.Module):
         self.inc_norm = RunningNorm(self.out_dim, eps=1e-4)
 
     def inputs(self, S, a, a_prev, xi_n):
+        xi_n = terrain.with_scan(S, xi_n)
         if self.use_prev_action:
             return torch.cat((invariant_features(S), a, a_prev, xi_n), -1)
         return torch.cat((invariant_features(S), a, xi_n), -1)

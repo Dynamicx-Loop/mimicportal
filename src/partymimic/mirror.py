@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import torch
 
+from . import terrain
 from .robot import RobotSpec
 
 _FLIP_TYPES = ("roll", "yaw")
@@ -26,7 +27,7 @@ class Mirror:
         self.sign = torch.tensor(robot.mirror_sign or sign, device=device)
         self.M = torch.diag(torch.tensor([1.0, -1.0, 1.0], device=device))
         self.xi_slices = xi_slices
-        unknown = set(xi_slices) - {"friction", "joint_offset", "com", "payload"}
+        unknown = set(xi_slices) - {"friction", "joint_offset", "com", "payload", "terrain"}
         assert not unknown, f"mirror of sim-context entries {unknown} not defined"
 
     def joints(self, x: torch.Tensor) -> torch.Tensor:
@@ -45,4 +46,6 @@ class Mirror:
         out[..., c.start + 1] = -xi[..., c.start + 1]  # lateral COM offset
         if "payload" in self.xi_slices:  # left / right wrist
             out[..., self.xi_slices["payload"]] = xi[..., self.xi_slices["payload"]].flip(-1)
+        if "terrain" in self.xi_slices:
+            out[..., self.xi_slices["terrain"]] = terrain.mirror(xi[..., self.xi_slices["terrain"]])
         return out

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import torch
 
+from . import terrain
 from .kinematics import Kinematics
 from .motion import CONTROL_DT, SPARSE5_ERR, MotionLib
 from .rotations import mat_to_6d, mm3, mv3, quat_to_mat, mat_to_quat, rot_angle_sq, so3_log, yaw_mat
@@ -106,6 +107,8 @@ class MDP:
         self.obs_err = motion.obs_err
         self.obs_dim, self.xi_dim = obs_dim(J, self.interface, self.obs_err), xi_dim
         self.critic_extra = J + len(kin.tracked_idx) * 3 + 3 + 6 + self.xi_dim
+        if terrain.enabled:
+            self.critic_extra += terrain.SCAN_DIM - terrain.XI_DIM
         self.obs_noise = obs_noise(sensing, J, self.interface, self.obs_err).to(dev)
         self.obs_scale = obs_scale(J, self.interface, self.obs_err).to(dev)
         self.wrists = [j for j, i in enumerate(kin.tracked_idx) if "_wrist_" in kin.body_names[i]]
@@ -155,12 +158,13 @@ class MDP:
         # reference bodies re-anchored to the robot's root (xy + yaw), as in BeyondMimic
         dR = yaw_mat(mm3(R, rR.transpose(-1, -2)))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + mv3(dR.unsqueeze(-3), m.body_p[f] - rp.unsqueeze(-2))
-        ref_bR = mm3(dR.unsqueeze(-3), m.body_R[f])
+        mbp, mbR, mbv, mbw = m.bodies(f)
+        ref_bp = anchor.unsqueeze(-2) + mv3(dR.unsqueeze(-3), mbp - rp.unsqueeze(-2))
+        ref_bR = mm3(dR.unsqueeze(-3), mbR)
         e_pos = ((ref_bp - bp) ** 2).sum(-1).mean(-1)
         e_ori = rot_angle_sq(ref_bR, bR).mean(-1)
-        e_lv = ((m.body_v[f] - bv) ** 2).sum(-1).mean(-1)
-        e_av = ((m.body_w[f] - bw) ** 2).sum(-1).mean(-1)
+        e_lv = ((mbv - bv) ** 2).sum(-1).mean(-1)
+        e_av = ((mbw - bw) ** 2).sum(-1).mean(-1)
         e_rp = ((rp - p) ** 2).sum(-1)
         e_ro = rot_angle_sq(rR, R)
         def track(c):
@@ -181,7 +185,9 @@ class MDP:
         r_lim = (torch.relu(q - self.soft_hi) + torch.relu(self.soft_lo - q)).sum(-1)
         r = (r_track + c.w_action_rate * r_rate + c.w_joint_limit * r_lim) * CONTROL_DT
         if w_contact > 0:
-            fz, rz = bp[..., self.feet, 2], m.body_p[f][..., self.feet, 2]
+            fz, rz = bp[..., self.feet, 2], mbp[..., self.feet, 2]
+            if terrain.enabled:  # foot height above the terrain under it
+                fz = fz - terrain.top(m.terrain_boxes[m.clip_id[f]], bp[..., self.feet, 0], bp[..., self.feet, 1])
             c_sim = torch.sigmoid((CONTACT_Z - fz) / 0.005)
             rc = getattr(m, "ref_contact", None)  # MotionLib.set_ref_contact (set by the trainer), else the fixed 4.5 cm
             c_ref = rc[f] if rc is not None else (rz < CONTACT_Z).float()
@@ -229,4 +235,4 @@ class MDP:
         e_body = mv3(Ht.unsqueeze(-3), ref_bp - bp).flatten(-2)
         e_root = mv3(Ht, rp - p)
         rel = mat_to_6d(mm3(R.transpose(-1, -2), rR))
-        return torch.cat((invariant_features(S), m.q[f] - q, e_body, e_root, rel, xi), -1)
+        return torch.cat((invariant_features(S), m.q[f] - q, e_body, e_root, rel, terrain.with_scan(S, xi)), -1)

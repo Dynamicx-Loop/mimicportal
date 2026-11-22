@@ -20,6 +20,8 @@ from mjlab.envs.mdp import dr
 from mjlab.managers.event_manager import RecomputeLevel
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 
+from . import terrain
+
 if TYPE_CHECKING:
     from .robot import RobotSpec
 
@@ -124,6 +126,8 @@ class XiLayout:
         if s.joint_vel_filter is not None:
             lo, hi = s.joint_vel_filter.tau_scale_range
             add("qd_tau_scale", [(lo + hi) / 2], [max((hi - lo) / 2, 1e-6)])
+        if terrain.enabled:  # raw boxes, last (terrain.with_scan replaces them by the height scan)
+            add("terrain", [0.0] * terrain.XI_DIM, [1.0] * terrain.XI_DIM)
         self.dim = len(centers)
         self.center = torch.tensor(centers, device=device)
         self.scale = torch.tensor(scales, device=device)

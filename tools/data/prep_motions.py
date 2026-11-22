@@ -4,7 +4,9 @@ Sources: any4hdmi npz (``qpos`` [T, 36] = root xyz, root quat wxyz, 29 joints in
 BONES-SEED G1 csv (120 Hz) or the LAFAN1 G1 retarget csv of tools/download_data.sh (30 Hz).
 
   python prep_motions.py --src <dir with *.npz> --out <dir> [--fps-in 30] [--fps 50]
-  python prep_motions.py --format bones --src <extracted g1/csv> --out <dir> [--list <paths>] [--workers 16]
+  python prep_motions.py --format bones --src <extracted g1/csv> --out <dir> [--list <paths>] [--workers 16] [--lean]
+--lean writes only fps, joint_pos and the pelvis pose (body 0 of body_pos_w / body_quat_w): all partymimic.motion
+reads, 1/12 of the size (the full BONES-SEED library).
   python prep_motions.py --format lafan --src data/lafan1_g1 --out <dir>
 """
 
@@ -121,8 +123,13 @@ LOADERS = {"bones": load_bones_csv, "lafan": load_lafan_csv,
 FPS_IN = {"bones": 120.0, "lafan": 30.0, "qpos": 30.0}
 
 
+def lean(qpos: np.ndarray, fps: float) -> dict[str, np.ndarray]:
+    return {"fps": np.array([fps]), "joint_pos": qpos[:, 7:].astype(np.float32),
+            "body_pos_w": qpos[:, None, :3].astype(np.float32), "body_quat_w": qpos[:, None, 3:7].astype(np.float32)}
+
+
 def _job(job):
-    f, out, fmt, fps_in, fps = job
+    f, out, fmt, fps_in, fps, lean_ = job
     name = os.path.splitext(os.path.basename(f))[0]
     try:
         raw = LOADERS[fmt](f)
@@ -131,8 +138,11 @@ def _job(job):
         qpos = resample(raw, fps_in, fps)
         if qpos.shape[0] < 2:
             return None
-        model = mujoco.MjModel.from_xml_path(str(G1_XML))
-        np.savez(os.path.join(out, name + ".npz"), **convert(qpos, model, fps))
+        if lean_:
+            np.savez(os.path.join(out, name + ".npz"), **lean(qpos, fps))
+        else:
+            model = mujoco.MjModel.from_xml_path(str(G1_XML))
+            np.savez(os.path.join(out, name + ".npz"), **convert(qpos, model, fps))
     except (ValueError, OSError) as e:
         print("skip", name, e, flush=True)
         return None
@@ -148,6 +158,7 @@ def main() -> None:
     ap.add_argument("--fps", type=float, default=50.0)
     ap.add_argument("--list", default=None, help="file with the source paths to convert (relative to --src)")
     ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--lean", action="store_true", help="joint_pos and the pelvis pose only")
     args = ap.parse_args()
     fps_in = args.fps_in or FPS_IN[args.format]
     model = mujoco.MjModel.from_xml_path(str(G1_XML))
@@ -157,7 +168,7 @@ def main() -> None:
     else:
         pattern = {"bones": "**/*.csv", "lafan": "*.csv", "qpos": "*.npz"}[args.format]
         files = sorted(glob.glob(os.path.join(args.src, pattern), recursive=True))
-    jobs = [(f, args.out, args.format, fps_in, args.fps) for f in files]
+    jobs = [(f, args.out, args.format, fps_in, args.fps, args.lean) for f in files]
     with Pool(args.workers) as pool:
         index = [r for r in pool.imap(_job, jobs, chunksize=4) if r is not None]
     print("converted", len(index), "of", len(files))

@@ -50,6 +50,7 @@ from partymimic.mdp import MAX_STEP_REWARD, MDP
 from partymimic.motion import MotionLib
 from partymimic.networks import Policy, policy_kwargs
 from partymimic.robot import RobotSpec, get_robot
+import partymimic.terrain as terrain
 
 
 def transfer_dr(target: RobotSpec, source: RobotSpec, parts: str = "all") -> RobotSpec:
@@ -87,6 +88,9 @@ motion = MotionLib.from_dir(args.motion_dir or robot.motion_dir, robot, kin, dev
 _args_json = os.path.join(os.path.dirname(args.ckpt) if args.ckpt else args.run_dir, "args.json")
 _run_args = json.load(open(_args_json)) if os.path.exists(_args_json) else {}
 motion.set_interface(_run_args.get("interface", "joint"), robot.tracked_bodies, _run_args.get("obs_err") or "none")
+terrain.enabled = bool(_run_args.get("terrain"))
+if terrain.enabled:
+    print(f"terrain: {motion.set_terrain(args.motion_dir or robot.motion_dir)} of {len(motion.names)} clips", flush=True)
 mdp = MDP(kin, motion, torch.tensor(robot.default_joint_pos_list(), device=dev), XiLayout(robot, dev).dim, robot.sensing)
 C = len(motion.names)
 N = C * args.repeats

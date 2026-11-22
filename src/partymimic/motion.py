@@ -9,12 +9,14 @@ from typing import Callable
 import numpy as np
 import torch
 
+from . import terrain
 from .kinematics import Kinematics
 from .robot import MotionArrays, RobotSpec
 from .rotations import mat_to_6d, mm3, mv3, quat_slerp, quat_to_mat, so3_log, yaw_mat
 
 CONTROL_DT = 0.02
 BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
+LAZY_FK_FRAMES = 20_000_000  # above this many frames the tracked-body states are not stored (PM_LAZY_FK=0/1 forces)
 
 
 GOAL_Q_OFFSET = 15  # index of the joint positions q(f+1) in the goal vector (first future frame: dp 3, rot 6, v 3, w 3, then q)
@@ -83,13 +85,21 @@ class MotionLib:
         cat = lambda xs: torch.cat(xs).to(device)  # noqa: E731
         self.root_p, self.root_R, self.root_v, self.root_w = cat(root_p), cat(root_R), cat(root_v), cat(root_w)
         self.q, self.qd = cat(jq), cat(jqd)
-        with torch.no_grad():
-            bp, bR, bv, bw = [], [], [], []
-            for s in range(0, self.num_frames, 65536):
-                e = min(s + 65536, self.num_frames)
-                out = kin.forward(self.root_p[s:e], self.root_R[s:e], self.root_v[s:e], self.root_w[s:e], self.q[s:e], self.qd[s:e])
-                bp.append(out[0]), bR.append(out[1]), bv.append(out[2]), bw.append(out[3])
-            self.body_p, self.body_R, self.body_v, self.body_w = torch.cat(bp), torch.cat(bR), torch.cat(bv), torch.cat(bw)
+        del ps, qs, js, root_p, root_R, root_v, root_w, jq, jqd
+        self.kin = kin
+        lazy = os.environ.get("PM_LAZY_FK")
+        # tracked-body states take 1.3 KB per frame (G1): large libraries recompute them from the root and joints
+        self.lazy_fk = self.num_frames > LAZY_FK_FRAMES if lazy is None else lazy == "1"
+        if self.lazy_fk:
+            self.body_p, self.body_R, self.body_v, self.body_w = (_LazyBodies(self, k) for k in range(4))
+        else:
+            with torch.no_grad():
+                bp, bR, bv, bw = [], [], [], []
+                for s in range(0, self.num_frames, 65536):
+                    e = min(s + 65536, self.num_frames)
+                    out = kin.forward(self.root_p[s:e], self.root_R[s:e], self.root_v[s:e], self.root_w[s:e], self.q[s:e], self.qd[s:e])
+                    bp.append(out[0]), bR.append(out[1]), bv.append(out[2]), bw.append(out[3])
+                self.body_p, self.body_R, self.body_v, self.body_w = torch.cat(bp), torch.cat(bR), torch.cat(bv), torch.cat(bw)
         # per-frame static goal parts: q, qd, root velocities in the root frame
         Rt = self.root_R.transpose(-1, -2)
         self.root_v_local = (Rt @ self.root_v.unsqueeze(-1)).squeeze(-1)
@@ -105,12 +115,10 @@ class MotionLib:
         self.bin_clip = torch.tensor(bin_clip, device=device)
         self.bin_start = torch.tensor(bin_start, device=device)
         self.num_bins = len(bin_start)
-        self.frame_bin = torch.zeros(self.num_frames, dtype=torch.long, device=device)
-        for b in range(self.num_bins):
-            c = bin_clip[b]
-            s = bin_start[b]
-            e = min(s + BIN_FRAMES, int(self.clip_end[c]) + 1)
-            self.frame_bin[s:e] = b
+        # bins tile every clip from its first frame, so a frame's bin is the last bin starting at or before it
+        fr = torch.arange(self.num_frames, device=device)
+        self.frame_bin = torch.searchsorted(self.bin_start, fr, right=True) - 1
+        del fr
 
     def bin_features(self) -> torch.Tensor:
         """(num_bins, 5) per 1 s bin of the reference: root height mean and std, log(1 + horizontal root speed),
@@ -150,12 +158,33 @@ class MotionLib:
         q-quantile of that foot's height in the clip) + margin, and horizontal speed below vmax. A fixed 4.5 cm
         threshold misses most stance frames of clips whose retargeted feet sit ~1 cm higher (LAFAN1 subject1:
         floor ~4.5 cm against ~3.5 cm for the others)."""
-        z, vh = self.body_p[:, feet, 2], self.body_v[:, feet, :2].norm(dim=-1)
+        z, vh = [], []
+        with torch.no_grad():
+            for s in range(0, self.num_frames, 65536):
+                f = torch.arange(s, min(s + 65536, self.num_frames), device=self.device)
+                bp, _, bv, _ = self.bodies(f)
+                zf = bp[:, feet, 2]
+                if self.terrain_boxes is not None:  # height above the terrain under the foot
+                    zf = zf - terrain.top(self.terrain_boxes[self.clip_id[f]], bp[:, feet, 0], bp[:, feet, 1])
+                z.append(zf), vh.append(bv[:, feet, :2].norm(dim=-1))
+        z, vh = torch.cat(z), torch.cat(vh)
         floor = torch.zeros_like(z)
-        for c in range(len(self.names)):
-            s = self.clip_id == c
-            floor[s] = z[s].quantile(q, dim=0)
+        for s, n in zip(self.clip_start.tolist(), self.clip_len.tolist()):
+            floor[s : s + n] = z[s : s + n].quantile(q, dim=0)
         self.ref_contact = ((z < floor + margin) & (vh < vmax)).float()
+
+    def bodies(self, f: torch.Tensor):
+        """Tracked-body positions, rotations, linear and angular velocities of reference frames f (any shape)."""
+        if self.lazy_fk:
+            return self.kin.forward(self.root_p[f], self.root_R[f], self.root_v[f], self.root_w[f], self.q[f], self.qd[f])
+        return self.body_p[f], self.body_R[f], self.body_v[f], self.body_w[f]
+
+    terrain_boxes: torch.Tensor | None = None  # --terrain: (num_clips, terrain.BOXES, terrain.BOX), set_terrain
+
+    def set_terrain(self, motion_dir: str) -> int:
+        """Load the clips' terrain (terrain.load) before set_ref_contact; returns the number of terrain clips."""
+        self.terrain_boxes, n = terrain.load(motion_dir, self.names, self.device)
+        return n
 
     interface = "joint"
     obs_err = "none"  # --obs_err: error block of the joint interface (mdp.obs_err_dim)
@@ -167,7 +196,10 @@ class MotionLib:
         self.interface, self.obs_err = interface, obs_err
         if interface == "sparse5" or obs_err == "kp":
             self.kp = sparse5_bodies(tuple(tracked))
-            self.kp_p, self.kp_R = self.body_p[:, self.kp].contiguous(), self.body_R[:, self.kp].contiguous()
+            if self.lazy_fk:
+                self.kp_p, self.kp_R = _LazyBodies(self, 0, self.kp), _LazyBodies(self, 1, self.kp)
+            else:
+                self.kp_p, self.kp_R = self.body_p[:, self.kp].contiguous(), self.body_R[:, self.kp].contiguous()
 
     def goal_dim(self, K: int) -> int:
         if self.interface == "sparse5":
@@ -200,6 +232,18 @@ class MotionLib:
 
     def ref_state(self, f: torch.Tensor):
         return self.root_p[f], self.root_R[f], self.root_v[f], self.root_w[f], self.q[f], self.qd[f]
+
+
+class _LazyBodies:
+    """body_p / body_R / body_v / body_w (k = 0..3) of a library without stored body states: indexing with frames
+    computes them by forward kinematics (``bodies``); ``sel`` keeps only those tracked bodies (keypoints)."""
+
+    def __init__(self, lib: MotionLib, k: int, sel: list[int] | None = None):
+        self.lib, self.k, self.sel = lib, k, sel
+
+    def __getitem__(self, f):
+        x = self.lib.bodies(f)[self.k]
+        return x if self.sel is None else x[..., self.sel, :] if self.k != 1 else x[..., self.sel, :, :]
 
 
 def load_npz(path: str):

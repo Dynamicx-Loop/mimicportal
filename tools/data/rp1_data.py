@@ -8,6 +8,9 @@
     testset <rp1 csv root> <out>         R2R RP1 CSVs of the 228 clips -> any4hdmi datasets <out>/<split>/ laid out like
                                          sim2real's datasets/motiondecode/<split>/ (qpos at 50 Hz, RP1 MJCF)
     hdxset <rp1 csv dir> <g1 set> <out>  RP1 copy of an any4hdmi G1 test set (the Extreme set of kungfu.py write)
+    mirror <rp1 npz dir> <g1 npz dir>    writes the left-right mirror <name>_M of every RP1 clip whose G1 mirror is in
+                                         the G1 library (partymimic.mirror's convention: world y reflected, joints
+                                         swapped left / right with RP1's mirror_sign), instead of retargeting it
 
 --md: sim2real's datasets/motiondecode (https://github.com/EGalahad/sim2real); --md-src: the G1 CSVs of MotionDecode
 (https://huggingface.co/datasets/CMRobot/MotionDecode, samples/); --xml: the RP1 MJCF (default data/rp1_28dof_mjlab,
@@ -114,6 +117,28 @@ def npz(a) -> None:
     print(n, "clips ->", out, "| unreadable:", bad)
 
 
+def mirror(a) -> None:
+    from partymimic.robot import get_robot
+
+    robot = get_robot("rp1")
+    names = list(robot.joint_names)
+    perm = [names.index(n.replace("left_", "@").replace("right_", "left_").replace("@", "right_")) for n in names]
+    sign = np.array(robot.mirror_sign)
+    have = {f.stem for f in Path(a.src).glob("*.npz")}
+    n = 0
+    for f in sorted(Path(a.g1).glob("*_M.npz")):
+        if f.stem[:-2] not in have or f.stem in have:
+            continue
+        z = np.load(Path(a.src) / f"{f.stem[:-2]}.npz")
+        p, q = z["body_pos_w"][:, 0].copy(), z["body_quat_w"][:, 0].copy()
+        p[:, 1] *= -1
+        q[:, [1, 3]] *= -1  # (w, x, y, z) of M R M: (w, -x, y, -z)
+        np.savez(Path(a.src) / f"{f.stem}.npz", fps=z["fps"], body_pos_w=p[:, None], body_quat_w=q[:, None],
+                 joint_pos=(z["joint_pos"][:, perm] * sign).astype(np.float32))
+        n += 1
+    print(n, "mirrors ->", a.src)
+
+
 def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
@@ -216,6 +241,9 @@ def main() -> None:
     p.add_argument("src")
     p.add_argument("g1", help="G1 any4hdmi test set")
     p.add_argument("out")
+    p = sub.add_parser("mirror")
+    p.add_argument("src")
+    p.add_argument("g1", help="G1 npz library with the <name>_M mirrors")
     for p in sub.choices.values():
         p.add_argument("--xml", default=RP1_XML, help="RP1 MJCF")
         p.add_argument("--md", default=None, help="sim2real datasets/motiondecode (md_in, testset)")
@@ -225,7 +253,7 @@ def main() -> None:
     MD_SRC, MD_DATASETS = a.md_src, (Path(a.md) if a.md else None)
     if a.cmd in ("md_in", "testset") and MD_DATASETS is None or a.cmd == "md_in" and MD_SRC is None:
         ap.error(f"{a.cmd} needs --md" + (" and --md-src" if a.cmd == "md_in" else ""))
-    {"g1csv": g1csv, "md_in": md_in, "npz": npz, "testset": testset, "hdxset": hdxset}[a.cmd](a)
+    {"g1csv": g1csv, "md_in": md_in, "npz": npz, "testset": testset, "hdxset": hdxset, "mirror": mirror}[a.cmd](a)
 
 
 if __name__ == "__main__":
