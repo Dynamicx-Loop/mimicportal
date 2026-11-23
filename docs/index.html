@@ -129,6 +129,8 @@
   <a class="sub" href="#real">Real robot</a>
   <a href="#use">Use it</a>
   <a href="#agent">Agent use</a>
+  <a class="sub" href="#agent-vlm">VLM planner</a>
+  <a class="sub" href="#agent-load">Carrying loads</a>
 
   <a class="code" href="https://github.com/Roboparty/PartyMimic">Code &#8599;</a>
 </nav>
@@ -885,8 +887,31 @@
   <div><video src="static/videos/agent_fridge.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Put a bottle into the fridge: walk there, open the door, grasp the bottle on the counter, put it on the shelf</div>
   <div><video src="static/videos/agent_can.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Pick up a can from the floor and carry it to the bin</div>
   <div><video src="static/videos/agent_cap.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Unscrew a bottle cap: hold the bottle, pinch, turn, let go, turn back</div>
+  <div><video src="static/videos/agent_chair.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Move a chair: walk to it, lift it, carry it over, put it down</div>
+  <div><video src="static/videos/agent_stairs.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Climb the steps and pick up a bottle on the top step</div>
 </div>
-<p class="note">RoboParty RP1, replayed in MuJoCo.</p>
+<p class="note">RoboParty RP1, replayed in simulation.</p>
+
+<h3 id="agent-vlm">A VLM planner on the keypoint interface</h3>
+<p>The sparse5 interface lets a planner command the robot without retargeting to joints. Qwen3.6-27B (local vLLM, no
+  thinking) sees the head camera and calls skills (walk_to, pick, place_on); a middle layer turns them into a 50 Hz
+  stream of six future keypoints (pelvis, torso, wrists, ankles) sent over the sim2real ZMQ protocol, and the RP1
+  sparse5 terrain policy tracks it. Task: walk to a table, pick up a box, carry it to the other table, put it on the
+  pad. Over 20 episodes: 14/20 closed loop (17/20 when the target is located once at planning time); Qwen3.6-35B-A3B
+  also 14/20 at a third of the latency.</p>
+<div class="videos">
+  <div><video src="static/videos/agent_qwen_t3.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Left: third person. Right: the head camera the VLM sees. RP1 in MuJoCo, 4&times; speed.</div>
+</div>
+
+<h3 id="agent-load">Carrying loads</h3>
+<p>The policy never observes the load: a crate is welded to both hands in MuJoCo, and the policy (RP1, sparse5,
+  terrain-trained, with the hidden 0&ndash;2 kg wrist payload in training) tracks the reference as usual.</p>
+<div class="videos">
+  <div><video src="static/videos/payload_rp1_crate_walk.mp4" autoplay muted loop playsinline controls preload="metadata"></video>2 kg crate: walk 3.5 m in 8 s</div>
+  <div><video src="static/videos/payload_rp1_crate_box.mp4" autoplay muted loop playsinline controls preload="metadata"></video>1.5 kg crate: step up onto a box</div>
+</div>
+<p class="note">MuJoCo sim2sim; the hands are drawn as simple white hands of the DH116s size instead of the dexterous
+  hand meshes.</p>
 
 <footer>
   PartyMimic builds on <a href="https://github.com/fuyichen0725/blinkmimic">BlinkMimic</a>,
