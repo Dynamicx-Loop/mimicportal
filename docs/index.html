@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PartyMimic: general humanoid motion tracking in minutes on one GPU</title>
+<meta name="description" content="PartyMimic: one whole-body humanoid tracking policy trained in 28 min on one 24 GB RTX 4090 on 41 h of diverse motion; zero-shot on five held-out test sets up to extreme martial arts, 21.4 mm on manipulation; MLP or attention, joint references or five keypoints; Unitree G1 and RoboParty RP1.">
+<style>
+  :root { --red: #c62828; --ink: #1d1d1f; --mute: #6b6b70; --line: #e3e3e8; --bg2: #f6f7f9; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); }
+  main { max-width: 1080px; margin: 0 auto; padding: 0 20px 64px; }
+  header { text-align: center; padding: 56px 20px 28px; }
+  h1 { font-size: 2.6rem; margin: 0 0 8px; letter-spacing: -0.02em; }
+  h1 span { color: var(--red); }
+  .tagline { font-size: 1.2rem; color: var(--mute); max-width: 780px; margin: 0 auto 20px; }
+  .links a { display: inline-block; margin: 4px 6px; padding: 8px 18px; border-radius: 999px; background: var(--ink);
+             color: #fff; text-decoration: none; font-weight: 600; font-size: .95rem; }
+  h2 { font-size: 1.6rem; margin: 56px 0 12px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 1.15rem; margin: 28px 0 8px; }
+  figure { margin: 18px 0; }
+  figure img { width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+  figcaption, .note { font-size: .82rem; color: var(--mute); line-height: 1.5; }
+  .pills { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 0 auto 18px; }
+  .pills span { background: var(--bg2); border-radius: 999px; padding: 4px 14px; font-size: .95rem; font-weight: 600; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 18px 0; }
+  .card { background: var(--bg2); border-radius: 10px; padding: 16px 18px; }
+  .card b { display: block; font-size: 1.7rem; color: var(--red); line-height: 1.2; }
+  .card span { font-size: .9rem; color: var(--mute); }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; margin: 10px 0; }
+  th, td { padding: 6px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { background: var(--bg2); font-weight: 600; white-space: nowrap; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr.ours td { background: #fdecec; font-weight: 600; }
+  tr.ref td { color: var(--mute); }
+  tr.robot td { background: #fff; font-weight: 700; padding-top: 14px; border-bottom: 2px solid var(--ink); }
+  .scroll { overflow-x: auto; }
+  .videos { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+  .videos div { font-size: .85rem; color: var(--mute); }
+  .videos video { width: 100%; border-radius: 6px; background: #000; display: block; }
+  .vrow { font-weight: 700; margin: 18px 0 6px; }
+  tr.grp td { background: var(--bg2); font-weight: 700; }
+  tr.sig-worse td:last-child { color: #b71c1c; font-weight: 600; }
+  tr.trend-worse td:last-child { color: #c75b39; }
+  tr.trend-better td:last-child { color: #2e7d32; }
+  tr.sig-better td:last-child { color: #1b5e20; font-weight: 600; }
+  tr.neutral td:last-child { color: var(--mute); }
+  code { font-size: .85em; background: var(--bg2); padding: 1px 4px; border-radius: 4px; }
+  ul.tight li { margin: 4px 0; }
+  .math { font-family: "Times New Roman", serif; font-style: italic; }
+  footer { margin-top: 56px; font-size: .82rem; color: var(--mute); }
+  td small { display: block; font-size: .72rem; color: var(--mute); font-weight: 400; }
+  details { margin: 12px 0; } summary { cursor: pointer; font-weight: 600; }
+  .videos.three { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .cards.six { grid-template-columns: repeat(3, 1fr); }
+  .cards.six .card b { font-size: 1.45rem; }
+  @media (max-width: 720px) { .cards.six { grid-template-columns: 1fr 1fr; } }
+  .card i { display: block; font-style: normal; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
+            font-weight: 700; color: var(--ink); margin-bottom: 2px; }
+  .wide video { width: 100%; border-radius: 8px; display: block; background: #000; }
+  .real { display: grid; grid-template-columns: 1.27fr 1fr; gap: 10px; align-items: start; }
+  .real .videos.pair { grid-template-columns: 1fr 1fr; }
+  .real .videos.stack { grid-template-columns: 1fr; }
+  @media (max-width: 720px) { .real { grid-template-columns: 1fr; } }
+  p[id] { scroll-margin-top: 16px; }
+  .card em.gpu { display: inline-block; vertical-align: middle; margin-left: 6px; padding: 2px 8px; border-radius: 6px;
+                 font-size: .78rem; font-style: normal; font-weight: 700; color: #fff; background: #76b900; }
+  .pills span.hot { background: #76b900; color: #fff; border-color: #76b900; font-weight: 700; }
+  .pills span i { font-style: normal; font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; opacity: .7;
+                  margin-right: 6px; }
+  header a.lab img { height: 46px; display: block; margin: 0 auto 18px; }
+  nav.toc a.lab { padding: 0 10px 14px; }
+  nav.toc a.lab:hover { background: none; }
+  nav.toc a.lab img { width: 100%; max-width: 160px; display: block; }
+  html { scroll-behavior: smooth; }
+  h2[id], h3[id], header[id] { scroll-margin-top: 16px; }
+  @media (max-width: 1179px) {
+    h2[id], h3[id], header[id] { scroll-margin-top: 56px; }
+    nav.toc { position: sticky; top: 0; z-index: 10; display: flex; gap: 2px; align-items: center; overflow-x: auto;
+              white-space: nowrap; padding: 6px 10px; background: rgba(255, 255, 255, .96); border-bottom: 1px solid var(--line);
+              font-size: .85rem; scrollbar-width: none; }
+    nav.toc::-webkit-scrollbar { display: none; }
+    nav.toc a { flex: none; padding: 4px 9px; border-radius: 6px; color: var(--ink); text-decoration: none; }
+    nav.toc a.lab, nav.toc a.sub { display: none; }
+    nav.toc a.brand { font-weight: 800; }
+    nav.toc a.brand span { color: var(--red); }
+    nav.toc a.on { background: #fdecec; color: var(--red); font-weight: 600; }
+    nav.toc a.brand.on { background: none; color: var(--ink); }
+    nav.toc a.code { background: var(--ink); color: #fff; font-weight: 600; }
+  }
+  @media (min-width: 1180px) {
+    body { padding-left: 210px; }
+    nav.toc { display: block; position: fixed; top: 0; left: 0; bottom: 0; width: 210px; overflow-y: auto;
+              padding: 28px 14px 28px 20px; border-right: 1px solid var(--line); background: #fff; font-size: .9rem; }
+    nav.toc a { display: block; padding: 5px 10px; margin: 1px 0; border-radius: 6px; color: var(--ink);
+                text-decoration: none; line-height: 1.35; }
+    nav.toc a.sub { padding-left: 24px; font-size: .84rem; color: var(--mute); }
+    nav.toc a:hover { background: var(--bg2); }
+    nav.toc a.on { background: #fdecec; color: var(--red); font-weight: 600; }
+    nav.toc a.brand { font-size: 1.25rem; font-weight: 800; margin-bottom: 12px; padding-left: 10px; }
+    nav.toc a.brand span { color: var(--red); }
+    nav.toc a.brand.on { background: none; color: var(--ink); }
+    nav.toc a.code { margin-top: 14px; background: var(--ink); color: #fff; text-align: center; font-weight: 600; }
+    .links a.mob { display: none; }
+  }
+</style>
+</head>
+<body>
+<nav class="toc" aria-label="Contents">
+  <a class="lab" href="https://github.com/Roboparty"><img src="static/roboparty_lab.png" alt="RoboParty Lab"></a>
+  <a class="brand" href="#top"><span>Party</span>Mimic</a>
+  <a href="#top">Overview</a>
+  <a href="#results">Results</a>
+  <a class="sub" href="#data">Training data</a>
+  <a class="sub" href="#encoders">MLP or attention</a>
+  <a href="#sparse">Sparse keypoints</a>
+  <a href="#videos">Sim2sim videos</a>
+  <a class="sub" href="#fast">Fast Extreme clips</a>
+  <a href="#speed">LAFAN speed</a>
+  <a href="#adaptive">Adaptive mechanisms</a>
+  <a class="sub" href="#adapt-data">Data selection</a>
+  <a class="sub" href="#adapt-sampling">Sampling</a>
+  <a class="sub" href="#adapt-terrain">Terrain</a>
+  <a href="#recipe">Recipe</a>
+  <a href="#supermimic">SuperMimic ablation</a>
+  <a class="sub" href="#long">Training to 320k</a>
+  <a href="#sim2real">Sim2real</a>
+  <a class="sub" href="#latency">Command lag</a>
+  <a class="sub" href="#real">Real robot</a>
+  <a href="#use">Use it</a>
+  <a href="#agent">Agent use</a>
+  <a class="sub" href="#agent-vlm">VLM planner</a>
+  <a class="sub" href="#agent-load">Carrying loads</a>
+
+  <a class="code" href="https://github.com/Roboparty/PartyMimic">Code &#8599;</a>
+</nav>
+<header id="top">
+  <a class="lab" href="https://github.com/Roboparty"><img src="static/roboparty_lab.png" alt="RoboParty Lab"></a>
+  <h1><span>Party</span>Mimic</h1>
+  <p class="tagline">One whole-body tracking policy, <b>fast</b>: trained in 28 min on 1&times; RTX 4090
+    (24 GB), on <b>41 h of diverse motion</b>. It <b>generalizes</b> to five held-out test sets up to extreme
+    martial arts and is the <b>most precise</b> of every method we compared, with <b>two architectures</b> (MLP,
+    attention) and <b>two modalities</b> (joint references or five keypoints).</p>
+  <div class="pills"><span class="hot"><i>Fast</i>28 min on 1&times; RTX 4090 (24 GB)</span>
+    <span><i>Diverse data</i>41 h</span><span><i>Generalizes</i>5 held-out sets</span>
+    <span><i>Precise</i>21.4 | 16.3 mm</span><span><i>2 architectures</i>MLP | attention</span>
+    <span><i>2 modalities</i>joints | 5 keypoints</span>
+    <span><i>Terrain</i>full BONES-SEED 99% in 13 min</span></div>
+  <div class="links"><a href="https://github.com/Roboparty/PartyMimic">Code</a><a class="mob" href="#results">Results</a><a class="mob" href="#sparse">Sparse keypoints</a>
+    <a class="mob" href="#videos">Videos</a><a class="mob" href="#speed">LAFAN speed</a><a class="mob" href="#adaptive">Adaptive</a><a class="mob" href="#supermimic">SuperMimic ablation</a><a class="mob" href="#sim2real">Sim2real</a></div>
+</header>
+<main>
+
+<div class="cards six">
+  <div class="card"><i>Fast</i><b>28 min <em class="gpu">RTX 4090 &middot; 24 GB</em></b><span>on one
+    consumer GPU for the full library, G1 and RP1 alike (attention: 43 min). The other methods took 50&ndash;120 min.</span></div>
+  <div class="card"><i>Diverse data</i><b>41 h</b><span>10,745 clips from LAFAN1, BONES-SEED, kneeling /
+    crawling, KungfuAthlete and XtremeMotion: 918 distinct motion types (<a href="#data">how measured</a>).</span></div>
+  <div class="card"><i>Generalizes</i><b>5 held-out sets</b><span>Loco, Mani, Dance, Ground and 308 extreme martial-arts
+    clips, all zero-shot. 92% of the Dance and 85% of the Extreme windows
+    have no close match in training.</span></div>
+  <div class="card"><i>Precise</i><b>21.4 | 16.3 mm</b><span>body error on held-out manipulation,
+    G1 | RP1; the best other method: 28.3 mm (Mimic Lite, &minus;24%)
+    | 28.0 mm (BlinkMimic, &minus;42%).</span></div>
+  <div class="card"><i>Two architectures</i><b>MLP | attention</b><span>the MLP is the fastest and fits a 24 GB card; the
+    attention encoder is the most precise (G1 37.4 mm mean).</span></div>
+  <div class="card"><i>Two modalities</i><b>joints | 5 keypoints</b><span>from only pelvis, head, wrist and ankle poses, RP1
+    reaches 42.3 mm, below every baseline given the full joint reference (53.6 mm).</span></div>
+</div>
+
+<figure>
+  <img src="static/hero.png" alt="Mean held-out body position error against training GPU-hours for every method">
+  <figcaption>Mean body position error over the five held-out test sets (lower is better) against training compute.
+    PartyMimic with the default MLP and with the attention reference encoder, 2-seed means at 12,000 iterations. The
+    other methods were trained by us on the same data and GPU; SONIC and Mimic Lite v1.1 are the official policies,
+    evaluated as released (G1 only).</figcaption>
+</figure>
+
+<h2 id="results">Results on held-out motions</h2>
+<p>Every method is trained on the same <b>10,745 clips</b>: LAFAN1, a 10k diversity subset of BONES-SEED, 56 kneeling and
+  crawling clips of our own, 635 KungFuAthlete clips and 14 XtremeMotion clips. It is tested on <b>five held-out sets</b>: Loco (80 clips),
+  Mani (48), Dance (40) and Ground (60) from MotionDecode, a different motion-capture source, and <b>Extreme</b> (308):
+  KungFuAthlete martial arts, jumps and flips, held out by whole source video. RP1 uses the same motions retargeted to
+  RP1. PartyMimic comes with two reference encoders: an <b>MLP</b> (default) and a cross-attention encoder
+  (<b>attention</b>, <code>--ref_enc xattn</code>).</p>
+<div class="scroll"><table>
+  <tr><th>Method</th><th class="n">Training</th><th class="n">Mean</th><th class="n">Loco</th><th class="n">Mani</th><th class="n">Dance</th><th class="n">Ground</th><th class="n">Extreme</th></tr>
+  <tr class="robot"><td colspan="8">Unitree G1 &middot; body position error (mm, lower is better), completion below</td></tr>
+  <tr class="ref"><td>SONIC (NVIDIA GEAR, official)</td><td class="n">21,000 GPU-h</td><td class="n"><b>55.1</b></td><td class="n">28.7<small>100%</small></td><td class="n">45.5<small>100%</small></td><td class="n">48.6<small>99%</small></td><td class="n">65.7<small>86%</small></td><td class="n">87.0<small>75%</small></td></tr>
+  <tr class="ref"><td>Mimic Lite v1.1 (official)</td><td class="n">50 GPU-h</td><td class="n"><b>57.1</b></td><td class="n">25.0<small>99%</small></td><td class="n">28.3<small>94%</small></td><td class="n">43.3<small>55%</small></td><td class="n">93.6<small>66%</small></td><td class="n">95.4<small>47%</small></td></tr>
+  <tr><td>SuperMimic (official code, rebuilt mjlab interface)</td><td class="n">99 min</td><td class="n"><b>57.5</b></td><td class="n">33.3<small>100%</small></td><td class="n">37.2<small>99%</small></td><td class="n">56.0<small>96%</small></td><td class="n">75.1<small>82%</small></td><td class="n">85.9<small>71%</small></td></tr>
+  <tr><td>NablaMimic (official config, 2 h)</td><td class="n">120 min</td><td class="n"><b>52.6</b></td><td class="n">32.4<small>99%</small></td><td class="n">30.2<small>100%</small></td><td class="n">47.7<small>92%</small></td><td class="n">73.4<small>82%</small></td><td class="n">79.5<small>68%</small></td></tr>
+  <tr><td>BlinkMimic (main preset)</td><td class="n">59 min</td><td class="n"><b>53.5</b></td><td class="n">32.4<small>100%</small></td><td class="n">30.6<small>100%</small></td><td class="n">54.6<small>96%</small></td><td class="n">66.4<small>92%</small></td><td class="n">83.3<small>75%</small></td></tr>
+  <tr><td>XMimic (BlinkMimic main in JAX)</td><td class="n">50 min</td><td class="n"><b>53.1</b></td><td class="n">33.8<small>99%</small></td><td class="n">30.8<small>100%</small></td><td class="n">54.5<small>98%</small></td><td class="n">63.8<small>89%</small></td><td class="n">82.8<small>74%</small></td></tr>
+  <tr class="ours"><td>PartyMimic, MLP (default)</td><td class="n">28 min</td><td class="n"><b>38.4</b></td><td class="n">26.0<small>100%</small></td><td class="n">21.4<small>100%</small></td><td class="n">36.2<small>95%</small></td><td class="n">51.5<small>94%</small></td><td class="n">57.1<small>70%</small></td></tr>
+  <tr class="ours"><td>PartyMimic, attention</td><td class="n">43 min</td><td class="n"><b>37.4</b></td><td class="n">25.1<small>100%</small></td><td class="n">21.7<small>99%</small></td><td class="n">34.7<small>96%</small></td><td class="n">51.0<small>95%</small></td><td class="n">54.4<small>74%</small></td></tr>
+  <tr class="robot"><td colspan="8">RoboParty RP1 &middot; body position error (mm, lower is better), completion below</td></tr>
+  <tr><td>SuperMimic (official code, rebuilt mjlab interface)</td><td class="n">99 min</td><td class="n"><b>59.4</b></td><td class="n">35.1<small>100%</small></td><td class="n">34.4<small>100%</small></td><td class="n">53.2<small>99%</small></td><td class="n">93.1<small>83%</small></td><td class="n">81.1<small>69%</small></td></tr>
+  <tr><td>BlinkMimic (main preset)</td><td class="n">68 min</td><td class="n"><b>53.6</b></td><td class="n">32.1<small>100%</small></td><td class="n">28.0<small>100%</small></td><td class="n">49.8<small>97%</small></td><td class="n">80.9<small>91%</small></td><td class="n">77.4<small>75%</small></td></tr>
+  <tr><td>XMimic (BlinkMimic main in JAX)</td><td class="n">59 min</td><td class="n"><b>53.6</b></td><td class="n">31.2<small>100%</small></td><td class="n">28.1<small>100%</small></td><td class="n">49.3<small>97%</small></td><td class="n">81.3<small>90%</small></td><td class="n">78.1<small>76%</small></td></tr>
+  <tr class="ours"><td>PartyMimic, MLP (default)</td><td class="n">29 min</td><td class="n"><b>39.3</b></td><td class="n">22.6<small>100%</small></td><td class="n">16.3<small>100%</small></td><td class="n">33.1<small>97%</small></td><td class="n">71.5<small>90%</small></td><td class="n">52.8<small>68%</small></td></tr>
+  <tr class="ours"><td>PartyMimic, attention</td><td class="n">43 min</td><td class="n"><b>38.7</b></td><td class="n">22.4<small>100%</small></td><td class="n">16.5<small>100%</small></td><td class="n">31.8<small>97%</small></td><td class="n">71.7<small>92%</small></td><td class="n">51.3<small>73%</small></td></tr>
+  <tr class="ours"><td>PartyMimic, sparse keypoints, MLP</td><td class="n">31 min</td><td class="n"><b>42.3</b></td><td class="n">23.8<small>100%</small></td><td class="n">19.2<small>100%</small></td><td class="n">36.5<small>99%</small></td><td class="n">76.5<small>88%</small></td><td class="n">55.4<small>69%</small></td></tr>
+  <tr class="ours"><td>PartyMimic, sparse keypoints, attention</td><td class="n">47 min</td><td class="n"><b>41.3</b></td><td class="n">23.3<small>100%</small></td><td class="n">18.5<small>100%</small></td><td class="n">35.5<small>99%</small></td><td class="n">74.0<small>91%</small></td><td class="n">55.1<small>73%</small></td></tr>
+</table></div>
+<p class="note">PartyMimic rows use the current recipe with <code>--std_scale 0.35</code> (<code>--muon_wd 0.1</code>, adaptive clip allocation, the long-run guards of
+  <a href="#long">Training to 320k</a> without collection noise, and the end-effector terms <code>--wrist_kernel 0.5 --obs_err kp
+  --wrist_payload 2</code>: a narrower wrist position kernel, the keypoint error as a policy input (sparse5 has it already)
+  and a hidden 0&ndash;2 kg wrist payload in training; the deployed inputs are unchanged; the commands are in the
+  <a href="https://github.com/Roboparty/PartyMimic#train">README</a>). Under a hidden 2 kg wrist payload these terms cut the wrist error from about 56 to 19 mm on G1
+  and from 57 to 16 mm on RP1 (joints, MLP); they cost strict Extreme success, about 1.5 points on G1 and 4 on RP1
+  (RP1 MLP, 4 seeds: 72 vs 68%). The shipped checkpoints are seed-0 runs of this recipe trained with the released code (MLP, joint references).
+  Against the prior defaults of the first release (<code>std_scale 0.35</code>, no Muon weight decay), like for like (training mix,
+  12,000 iterations, 2 seeds, absolute-heading error, MLP), the earlier version of this recipe (earlier guards, no
+  end-effector terms) already tracks at least as precisely, five-set mean 45.1 vs 45.1 mm on G1 and 46.4 vs 47.8 mm on RP1.
+  The training defaults are the deployment recipe: these kernels, guards and end-effector terms plus a 5&ndash;20 ms
+  command lag in training (<code>--act_lag 1,4</code>), without the clip allocation and <code>--obs_err kp</code>; under a
+  topic-based deployment latency they cut RP1 ankle chatter from 1.40&deg; to 0.39&deg; and foot slip from 3.75 to
+  1.03 cm/s (<a href="#latency">Sim2real</a>).
+  Scored by the <a href="https://egalahad.github.io/sim2real/leaderboard/">sim2real leaderboard</a>
+  MuJoCo sim2sim evaluator after ONNX export: every clip played from start to end, failure when the pelvis height error
+  exceeds 0.3 m or the gravity direction error exceeds 0.8. Error is the local body position error over the tracked part
+  of each clip, with the reference turned by the relative pelvis heading of robot and reference (no absolute heading); completion is the tracked share of each clip, except under Extreme, where it is the strict success: the share of clips played to the end with the pelvis orientation error never above 57&deg; for 0.2 s; Mean is the mean error of the five sets. All trained methods learned from the same library, the training mix plus the 14 XtremeMotion clips once each, for 12,000 iterations (NablaMimic: its
+  2-hour budget, run as the 18,205 updates it reaches in 2 h on our RTX 4090) with 2 seeds; the table gives the means. PartyMimic trains with its adaptive clip allocation and anti-collapse guards; every baseline keeps its own sampler and recipe. SuperMimic is the authors' code (HybridRobotics/supermimic, proprioceptive actor) on a rebuilt mjlab interface. Training is the wall-clock time of 12,000 iterations on an
+  otherwise idle RTX 4090 (i9-14900K), measured in a separate full run for PartyMimic and SuperMimic. Our cards are 48 GB editions; the MLP fits the standard 24 GB card: with
+  only 24.1 GB left free, G1 and RP1 runs kept the same speed and peaked at 22.6 and 23.4 GB.</p>
+
+<h3 id="data">Training data and how new the test sets are</h3>
+<figure>
+  <img src="static/data.png" alt="t-SNE map of the training windows by source, and the share of test windows close to the training data">
+  <figcaption>Left: the 1-s windows of the training library (a sample per source), embedded with t-SNE. Right: the share
+    of each test set's windows that have a close training window, as the sources are added.</figcaption>
+</figure>
+<p>We describe every 1-s window by heading-invariant root, joint and hand / foot kinematics, project to 32 dimensions
+  and cluster the 41 h into 2,000 motion clusters. The library spans <b>918 distinct
+  motion types</b> (the exponential of the cluster entropy): LAFAN1 alone 534,
+  BONES-SEED adds 312, kneeling / crawling
+  12 and KungfuAthlete, with only
+  1.3 h, 59; the 14 XtremeMotion clips (2 min) add 1. A test window
+  counts as covered when a training window lies within the median distance between windows of different training
+  sources. Only 47% of Loco, 57% of Mani,
+  8% of Dance, 46% of Ground and
+  15% of Extreme windows are covered: most test motion is new to every method.
+  KungfuAthlete training clips raise the Extreme coverage from 7% to
+  15%.</p>
+
+<h3 id="encoders">MLP or attention</h3>
+<p>The attention encoder lets a causal Transformer over the observation history query the goal frames, so the
+  robot's own dynamics shape how it reads the reference. It lowers the G1 error on Ground by
+  0.5 mm and on Extreme by 2.7 mm, and the mean by
+  1.0 mm (RP1: 0.6 mm), at 1.6&times; the
+  training time. The MLP fits a 24 GB card; the attention encoder needs more memory, or <code>--pi_batch 1024</code>
+  on 24 GB, which costs G1 2.7 mm on Ground and 2.1 mm on Extreme.
+  <code>--pipeline</code> splits training over two GPUs for 1.6&ndash;1.9&times; the speed.</p>
+<div class="scroll"><table>
+  <tr><th>Encoder</th><th class="n">G1 time</th><th class="n">RP1 time</th><th class="n">G1 mean error</th><th class="n">RP1 mean error</th><th>GPU memory</th></tr>
+  <tr class="ours"><td>MLP (default)</td><td class="n">28 min</td><td class="n">29 min</td><td class="n">38.4 mm</td><td class="n">39.3 mm</td><td>22 GB peak: fits 24 GB</td></tr>
+  <tr class="ours"><td>Attention</td><td class="n">43 min</td><td class="n">43 min</td><td class="n">37.4 mm</td><td class="n">38.7 mm</td><td>&gt; 24 GB (or <code>--pi_batch 1024</code>)</td></tr>
+</table></div>
+
+<h2 id="sparse">Sparse keypoints: one command for any body</h2>
+<p>With <code>--interface sparse5</code> the command is <b>six poses per frame</b>: the pelvis pose, the head
+  orientation and the poses of both wrists and both ankles, 51 numbers and <b>no joint angles</b>. Any body with a pelvis,
+  a head, two hands and two feet can be written this way: a person in a motion-capture suit, a VR tracker set, a video
+  pose estimate, or another robot. The command does not depend on a robot's joint layout.</p>
+<div class="wide"><video src="static/videos/kp_interface.mp4" poster="static/videos/kp_interface.png" autoplay muted loop playsinline controls preload="metadata"></video></div>
+<p class="note">The same LAFAN1 motion as captured from a person and retargeted to Unitree G1 and RoboParty RP1, each
+  written as the same six keypoint poses (spheres, with their orientation axes). The person's axes are aligned to G1's
+  at the first frame.</p>
+<p>Three additions let the policy follow such a command nearly as well as full joint references:</p>
+<ul class="tight">
+  <li>The observation adds the robot's own keypoint errors, from forward kinematics of its joint encoders.</li>
+  <li>A keypoint-to-joint network, fit to the motion library and frozen, estimates the reference pose for the
+    reference-action skip (<code>--kp_skip</code>).</li>
+  <li>An auxiliary head predicts the reference joint angles from the policy's reference latent (<code>--kp_aux</code>).</li>
+</ul>
+<p>On RP1 the mean whole-body error over the five sets is 42.3 mm from keypoints against
+  39.3 mm from joint references with the MLP (41.3 vs 38.7 mm with attention),
+  below every baseline that sees the full joint reference (best: 53.6 mm). The keypoints themselves are
+  tracked within 2 mm
+  of joint references on Loco/Mani and Dance, 37&ndash;43% below the best baseline. <code>tools/export_deploy_onnx.py</code>
+  exports the policy with a keypoint input (<code>ref_kp</code>) and a deployment YAML.</p>
+<div class="scroll"><table>
+  <tr><th>Reference</th><th>Encoder</th><th class="n">Loco/Mani</th><th class="n">Dance</th><th class="n">Ground</th><th class="n">Extreme</th><th class="n">Extreme, whole body</th></tr>
+  <tr class="robot"><td colspan="7">RoboParty RP1 &middot; wrist and ankle position error (mm, relative to the own pelvis heading)</td></tr>
+  <tr><td>Joint</td><td>MLP</td><td class="n">23.3</td><td class="n">39.9</td><td class="n">64.1</td><td class="n">76.1</td><td class="n">52.8<small>68%</small></td></tr>
+  <tr class="ours"><td>Sparse keypoints</td><td>MLP</td><td class="n">24.8</td><td class="n">42.1</td><td class="n">75.3</td><td class="n">80.3</td><td class="n">55.4<small>69%</small></td></tr>
+  <tr><td>Joint</td><td>attention</td><td class="n">23.3</td><td class="n">37.8</td><td class="n">64.0</td><td class="n">74.0</td><td class="n">51.3<small>73%</small></td></tr>
+  <tr class="ours"><td>Sparse keypoints</td><td>attention</td><td class="n">23.6</td><td class="n">40.1</td><td class="n">70.1</td><td class="n">79.5</td><td class="n">55.1<small>73%</small></td></tr>
+  <tr class="ref"><td>Joint</td><td>BlinkMimic</td><td class="n">39.4</td><td class="n">70.3</td><td class="n">83.1</td><td class="n">117.2</td><td class="n">77.4<small>75%</small></td></tr>
+  <tr class="ref"><td>Joint</td><td>XMimic</td><td class="n">39.9</td><td class="n">70.3</td><td class="n">83.8</td><td class="n">118.1</td><td class="n">78.1<small>76%</small></td></tr>
+</table></div>
+<div class="videos three">
+  <div><video src="static/videos/rp1_sp5_locomotion.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Locomotion</div>
+  <div><video src="static/videos/rp1_sp5_dance.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Dance</div>
+  <div><video src="static/videos/rp1_sp5_extreme.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Extreme: martial arts</div>
+</div>
+<p class="note">The RP1 sparse-keypoint policy (MLP, seed 0) in sim2sim. Only its command is drawn: the six target poses,
+  placed in the robot's own pelvis heading frame as the policy reads them, and a red line from each of the robot's
+  wrists and ankles to its target. Locomotion and Dance are the median clips of their sets; Extreme is the
+  martial-arts clip of the videos below.</p>
+<p>The same policy on the XtremeMotion flips and other inverted moves (in the training library, see <a href="#xm">below</a>): it completes
+  8 of the 14 clips under the strict criterion (played to the end, pelvis orientation error never above 57&deg; for 0.2 s),
+  against 7 for the joint-reference MLP of the same seed.</p>
+<div class="videos three">
+  <div><video src="static/videos/rp1_sp5_xm_00.mp4" autoplay muted loop playsinline controls preload="metadata"></video>xtreme_00: 54.3 mm</div>
+  <div><video src="static/videos/rp1_sp5_xm_03.mp4" autoplay muted loop playsinline controls preload="metadata"></video>xtreme_03: 36.0 mm</div>
+  <div><video src="static/videos/rp1_sp5_xm_08.mp4" autoplay muted loop playsinline controls preload="metadata"></video>xtreme_08: 36.2 mm</div>
+</div>
+<p class="note">Drawn as above; the number is the body position error of the clip.</p>
+
+<h2 id="videos">Sim2sim on held-out motions: zero-shot</h2>
+<p>Rollouts from the evaluator (MuJoCo, deterministic policy, default MLP encoder, seed 0). Loco, Mani, Dance and
+  Ground show the clip with the <b>median</b> error of its set. Extreme shows two <b>fast</b> clips with clean
+  references, chosen by us: a 12-second fist routine (faster than 63% of the Extreme clips;
+  error 37 mm) and a jump (faster than 86%;
+  49 mm). The robot is solid, the reference a blue ghost, both at their global poses.</p>
+<div class="vrow">Unitree G1</div>
+<div class="videos three">
+  <div><video src="static/videos/g1_locomotion.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Locomotion</div>
+  <div><video src="static/videos/g1_manipulation.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Manipulation</div>
+  <div><video src="static/videos/g1_dance.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Dance</div>
+  <div><video src="static/videos/g1_ground.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Ground</div>
+  <div><video src="static/videos/g1_extreme.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Extreme: martial arts (fast, chosen)</div>
+  <div><video src="static/videos/g1_extreme_jump.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Extreme: jump (fast, chosen)</div>
+</div>
+<div class="vrow">RoboParty RP1</div>
+<div class="videos three">
+  <div><video src="static/videos/rp1_locomotion.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Locomotion</div>
+  <div><video src="static/videos/rp1_manipulation.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Manipulation</div>
+  <div><video src="static/videos/rp1_dance.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Dance</div>
+  <div><video src="static/videos/rp1_ground.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Ground</div>
+  <div><video src="static/videos/rp1_extreme.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Extreme: martial arts (fast, chosen)</div>
+  <div><video src="static/videos/rp1_extreme_jump.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Extreme: jump (fast, chosen)</div>
+</div>
+
+<h3 id="fast">Why the fast Extreme clips are harder</h3>
+<p>The Extreme references are estimated from monocular video. We split the 308 clips into thirds by reference speed
+  (95th percentile of the wrist and ankle speed) and measured every G1 rollout:</p>
+<div class="scroll"><table>
+  <tr><th>G1, Extreme</th><th class="n">Slowest third</th><th class="n">Fastest third</th></tr>
+  <tr><td>Reference wrist / ankle speed</td><td class="n">0.8 m/s</td><td class="n">4.5 m/s</td></tr>
+  <tr><td>Body position error</td><td class="n">21 mm</td><td class="n">70 mm</td></tr>
+  <tr><td>Robot behind the reference</td><td class="n">20 ms</td><td class="n">20 ms</td></tr>
+  <tr><td>Reference foot sliding while on the ground</td><td class="n">0.06 m/s</td><td class="n">0.98 m/s</td></tr>
+  <tr><td>Largest gap between robot and reference root</td><td class="n">0.3 m</td><td class="n">1.3 m</td></tr>
+</table></div>
+<p>The robot is not late: it trails by one or two control steps, and shifting the reference by that much lowers the error
+  by only 9%. Two other things grow with speed. In the fast clips the reference's feet
+  slide over the ground at about 1 m/s while in contact, an artifact of the video
+  estimate; the robot plants its feet, so its position drifts away from the reference and the ghost runs off. And the
+  fastest swings exceed what the actuators deliver: the robot reaches 82% of the
+  reference speed. Over all clips the error follows foot sliding (rank correlation 0.81) about as
+  closely as speed (0.84). RP1 shows the same pattern (fastest third:
+  87% of the speed, 0.86 m/s sliding).</p>
+
+<p id="xm">The 14 XtremeMotion clips (OmniXtreme's public set) are a different case: the training library holds each of them once,
+  so they are not held out, and most are flips and other inverted moves. Under the same strict criterion the
+  default policy completes 12 of the 14 on G1 and 7 on RP1. Three inverted moves that both robots complete:</p>
+<div class="videos three">
+  <div><video src="static/videos/g1_xm_07.mp4" autoplay muted loop playsinline controls preload="metadata"></video>G1, xtreme_07: 24.8 mm</div>
+  <div><video src="static/videos/g1_xm_08.mp4" autoplay muted loop playsinline controls preload="metadata"></video>G1, xtreme_08: 27.2 mm</div>
+  <div><video src="static/videos/g1_xm_00.mp4" autoplay muted loop playsinline controls preload="metadata"></video>G1, xtreme_00: 50.5 mm</div>
+</div>
+<div class="videos three">
+  <div><video src="static/videos/rp1_xm_07.mp4" autoplay muted loop playsinline controls preload="metadata"></video>RP1, xtreme_07: 29.5 mm</div>
+  <div><video src="static/videos/rp1_xm_08.mp4" autoplay muted loop playsinline controls preload="metadata"></video>RP1, xtreme_08: 38.1 mm</div>
+  <div><video src="static/videos/rp1_xm_00.mp4" autoplay muted loop playsinline controls preload="metadata"></video>RP1, xtreme_00: 46.6 mm</div>
+</div>
+<p class="note">Rollouts from the evaluator as above (MuJoCo, deterministic policy, default MLP encoder, seed 0); the number is the body
+  position error of the clip. The robot is solid, the reference a blue ghost, both at their global poses.</p>
+
+<h2 id="speed">Speed on LAFAN: learned in 3&ndash;5 min</h2>
+<p><b>This comparison is on the LAFAN dataset</b> (LAFAN-40: the 40 G1 LAFAN1 clips, used for both training and
+  evaluation), XMimic's speed benchmark, not on the held-out test sets above.
+  <a href="https://github.com/nico-bohlinger/xmimic">XMimic</a> rebuilds BlinkMimic's main recipe in JAX and reports
+  BlinkMimic's LAFAN-40 target in 0.91 min on four H100s. We ran its 1-GPU and 2-GPU (AL) trainers, BlinkMimic main and
+  PartyMimic on our two RTX 4090s, under XMimic's protocol, 3 seeds each. PartyMimic keeps its recipe unchanged; it was
+  not tuned for this benchmark. In the <a href="#results">comparison above</a> XMimic matches BlinkMimic (G1 mean error 53.1 vs 53.5 mm).</p>
+<figure>
+  <img src="static/lafan_speed.png" alt="LAFAN-40 evaluation return against training minutes and time to target">
+</figure>
+<div class="scroll"><table>
+  <tr><th>Method</th><th class="n">GPUs</th><th class="n">it/s</th><th class="n">First return &ge; 0.82</th>
+      <th class="n">Held &times;3, 0 failed</th><th class="n">Held &times;3, with start-up</th><th class="n">Return at 3,500 it</th></tr>
+  <tr><td>BlinkMimic (main)</td><td class="n">1</td><td class="n">7.8</td><td class="n">2.93 min</td><td class="n">3.45 min</td><td class="n">3.62 min</td><td class="n">0.865</td></tr>
+  <tr><td>XMimic, 1 GPU</td><td class="n">1</td><td class="n">9.3</td><td class="n">2.32 min</td><td class="n">3.71 min</td><td class="n">3.96 min</td><td class="n">0.860</td></tr>
+  <tr class="ours"><td>PartyMimic, 1 GPU</td><td class="n">1</td><td class="n">8.2</td><td class="n">2.45 min</td><td class="n">5.17 min</td><td class="n">5.57 min</td><td class="n">0.883</td></tr>
+  <tr><td>XMimic, 2 GPUs (actor | learner)</td><td class="n">2</td><td class="n">13.2</td><td class="n">1.71 min</td><td class="n">2.89 min</td><td class="n">3.17 min</td><td class="n">0.863</td></tr>
+  <tr class="ours"><td>PartyMimic, 2 GPUs (<code>--pipeline</code>)</td><td class="n">2</td><td class="n">12.7</td><td class="n">1.66 min</td><td class="n">3.41 min</td><td class="n">3.82 min</td><td class="n">0.883</td></tr>
+</table></div>
+<ul class="tight">
+  <li><b>Return 0.82.</b> PartyMimic needs the fewest iterations (1,200&ndash;1,300; BlinkMimic 1,300&ndash;1,600; XMimic
+    1,400&ndash;1,500). On two GPUs it gets there as fast as XMimic (1.66 vs 1.71 min, 1.8&times; BlinkMimic). On one GPU XMimic's
+    faster iterations make up for that (2.32 vs 2.45 min).</li>
+  <li><b>Zero failures.</b> PartyMimic is slower to the full target. One or two hard clips (<code>dance1_subject1</code>,
+    <code>jumps1_subject2</code>) keep failing, so zero failures held over three checkpoints comes at 2,100&ndash;3,100 iterations (XMimic 1,900&ndash;2,400, BlinkMimic 1,600&ndash;1,800). BlinkMimic and XMimic run evaluation-guided
+    probe sweeps that search for exactly these failures among the training clips. PartyMimic dropped them because they
+    did not improve held-out tracking (see the <a href="#recipe">recipe</a>).</li>
+  <li><b>Final quality.</b> At the end of the 3,500-iteration budget PartyMimic's return is 0.883; the others reach
+    0.860&ndash;0.865.</li>
+  <li><b>Where PartyMimic's speed comes from.</b> On one GPU, the motion latents of all 32 imagined steps are computed in
+    one batched pass, and every Adam update (the critic's and the Adam half of Muon) runs on one flat buffer. Together these cut the policy update from 86.5 to
+    78.4 ms and raise training from 7.65 to 8.2 it/s. With <code>--pipeline</code>, GPU 0 collects data and fits the world model while GPU 1 updates the
+    policy and the critic on the previous iteration's data and world model, which gives 1.6&times; the 1-GPU throughput.
+    The transfers between the GPUs run through pinned host memory on side streams and overlap the compute. The
+    policy crosses as soon as its step is done, during the critic fit. Linear weights cross as bf16, which is exact
+    because they only enter bf16 autocast matmuls. This matters here: the second 4090's PCIe link runs at x1 (about
+    1.6 GB/s measured), so a 36 MB fp32 policy alone would take over 20 ms to cross.</li>
+</ul>
+<p class="note"><b>Protocol.</b> LAFAN-40: the 40 G1 LAFAN1 clips, both for training and evaluation, with the same files
+  as XMimic (checked against its SHA-256 list). Every run trains 3,500 iterations with a checkpoint every 100. Each
+  checkpoint plays every clip once from its first frame per replica (4 replicas), without randomization or noise. A clip
+  fails when the training termination triggers. BlinkMimic and PartyMimic checkpoints are scored by BlinkMimic's
+  <code>eval_batch.py</code>, XMimic's by its JAX evaluator, which XMimic reports agrees with it to +0.001.
+  Training minutes exclude the first log interval's excess over the steady interval for every method, by XMimic's
+  <code>tools/exclude_compile.py</code> rule. That is compilation and CUDA-graph capture for the PyTorch trainers, and
+  the first-execution overhead left in XMimic's clock, since XMimic compiles before its clock starts. The
+  with-start-up column adds back each method's start-up with warm compilation caches (seeds 1 and 2): 0.17 min for
+  BlinkMimic, 0.26 / 0.28 min for XMimic (its ahead-of-time compilation), 0.41 min for PartyMimic. The very first run on
+  a machine compiles from scratch and takes longer: 3.3 / 2.0 min more for XMimic 1 GPU / AL, 1.9 min for the
+  PartyMimic pipeline. Hardware: two RTX 4090
+  (48 GB), i9-14900K. The two-GPU methods share the x1 link of the second GPU. XMimic AL runs its probe process on the
+  learner GPU under CUDA MPS, as in its README.</p>
+
+<h2 id="adaptive">Adaptive mechanisms: data, sampling, terrain</h2>
+<p>Three parts of PartyMimic adapt to the library instead of being tuned per dataset: which clips to train on, where
+  the resets go, and what each clip is performed on. All three use the same 1-s motion windows and only the robot's
+  own model, so G1 and RP1 go through the same code.</p>
+
+<h3 id="adapt-data">Diversity-selected data</h3>
+<p>The 1-s windows of the 71,132 non-mirrored BONES-SEED clips (144 h) are clustered, and clips are picked evenly over
+  the clusters (<code>tools/diversity</code>). A 10k selection covers <b>every</b> content label and motion type of
+  the pool; a random 10k misses 44% of the contents. This selection is the BONES-SEED part of the training library;
+  SuperMimic trains on all of BONES-SEED.</p>
+<div class="scroll"><table>
+  <tr><th>10k BONES-SEED clips</th><th class="n">Hours</th><th class="n">Content labels (of 3,742)</th><th class="n">Motion types (of 146)</th><th class="n">Pool window to nearest selected, p50</th></tr>
+  <tr><td>Random</td><td class="n">18.7</td><td class="n">2,106</td><td class="n">114</td><td class="n">0.108</td></tr>
+  <tr class="ours"><td>Diversity-selected, duration-matched</td><td class="n">22.3</td><td class="n"><b>3,742</b></td><td class="n"><b>146</b></td><td class="n">0.098</td></tr>
+  <tr class="ours"><td>Diversity-selected (training library)</td><td class="n">36.9</td><td class="n"><b>3,742</b></td><td class="n"><b>146</b></td><td class="n"><b>0.079</b></td></tr>
+</table></div>
+<p class="note">Content labels and motion types are BONES-SEED's own annotations; the last column is the RMS feature
+  distance from each pool window to its nearest window in the selection (lower: the selection represents the pool
+  better).</p>
+
+<h3 id="adapt-sampling">Adaptive sampling</h3>
+<p>Resets are spread over motion clusters instead of over duration (<code>--div_k 24</code>), with a share for the
+  clips that failed recently. Ground motions are short and rare: by duration they get 8% of the resets, by cluster
+  30%, and removing the cluster balance costs Ground 6&ndash;19 mm. SuperMimic samples by return; on PartyMimic's library
+  (G1, 10,731 clips, 12,000 iterations, five-set mean error) that sampler alone is clearly worse, and kept inside the
+  cluster and failure shares it is within noise:</p>
+<div class="scroll"><table>
+  <tr><th>Reset sampler</th><th class="n">Seeds</th><th class="n">Five-set mean (mm)</th></tr>
+  <tr class="ours"><td>PartyMimic: cluster-balanced + failure share</td><td class="n">5</td><td class="n"><b>54.7</b></td></tr>
+  <tr><td>SuperMimic ReturnSampler inside the cluster / failure shares</td><td class="n">1</td><td class="n">54.0</td></tr>
+  <tr class="sig-worse"><td>SuperMimic ReturnSampler alone</td><td class="n">1</td><td class="n">60.1</td></tr>
+</table></div>
+
+<h3 id="adapt-terrain">Automatic terrain</h3>
+<p>Many BONES-SEED clips are performed on something: a 50 cm box, a chair, stairs, a wall, a ladder. On flat ground
+  they cannot be tracked. <code>--terrain</code> plays every clip through the robot's MJCF, reads the supports off its
+  contacts (a still raised foot: boxes and steps; the pelvis resting with the center of mass outside the feet: seats;
+  back or hands against something: walls; feet and hands raised together: ladders), builds up to 16 static boxes per
+  clip and checks them physically: no body inside a box, and no stretch of more than 0.8 s off the floor that does
+  not rest on a box top. Clips that fail are never trained (743 of 130,026 G1 clips, 1,346 RP1). The simulator places
+  the boxes at every reset; the world model and the critic get a height scan, the policy stays blind, so the
+  deployed inputs are unchanged.</p>
+<div class="scroll"><table>
+  <tr><th>Full BONES-SEED, one RTX 4090, every clip from its first frame</th><th class="n">Iterations</th><th class="n">Training</th><th class="n">All clips</th><th class="n">Terrain clips</th></tr>
+  <tr class="robot"><td colspan="5">Unitree G1 &middot; 129,205 clips, 4,902 with terrain</td></tr>
+  <tr><td>PartyMimic, flat ground</td><td class="n">30,000</td><td class="n">2.0 h</td><td class="n">96.96%</td><td class="n">26.4%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">3,000</td><td class="n">13 min</td><td class="n"><b>99.05%</b></td><td class="n">89.1%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">30,000</td><td class="n">1.3 h</td><td class="n">99.65%</td><td class="n">94.8%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code> (best checkpoint)</td><td class="n">170,000</td><td class="n">6.8 h</td><td class="n"><b>99.80%</b></td><td class="n"><b>97.2%</b></td></tr>
+  <tr class="robot"><td colspan="5">RoboParty RP1 &middot; 127,702 clips (R2R retargets), 4,934 with terrain</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">3,000</td><td class="n">20 min</td><td class="n"><b>99.01%</b></td><td class="n">83.8%</td></tr>
+  <tr class="ours"><td>PartyMimic, <code>--terrain</code></td><td class="n">100,000</td><td class="n">4.3 h</td><td class="n"><b>99.57%</b></td><td class="n">93.5%</td></tr>
+</table></div>
+<p class="note">Completion: the clip is played to its end without the pelvis height error exceeding 0.3 m or the gravity
+  direction error exceeding 0.8 (<code>tools/eval_chunks.py</code>). G1 stays at or above 99% from 3,000 iterations on;
+  RP1 from 80,000 on (one dip to 98.1% at 70k on fast jogging turns). Stairs and ladders remain the hard part (G1 at
+  170k: 71% and 25%); the ladder is a crude model and the policy cannot see the next rung. Both runs used an earlier
+  version of the check (821 G1 and 2,324 RP1 clips dropped). For reference, the SuperMimic paper reports 25 failed
+  clips of 129,514 after 3 h, under its own setup and evaluation, which we have not reproduced. Per-category tables
+  are in the <a href="https://github.com/Roboparty/PartyMimic#terrain-the-full-bones-seed">README</a>.</p>
+<div class="vrow">Unitree G1</div>
+<div class="videos">
+  <div><video src="static/videos/terrain_g1_chair.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Chair: sit down</div>
+  <div><video src="static/videos/terrain_g1_stairs.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Stairs: climb up</div>
+  <div><video src="static/videos/terrain_g1_box.mp4" autoplay muted loop playsinline controls preload="metadata"></video>50 cm box: step up with a crate</div>
+  <div><video src="static/videos/terrain_g1_ladder.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Ladder</div>
+</div>
+<div class="vrow">RoboParty RP1</div>
+<div class="videos">
+  <div><video src="static/videos/terrain_rp1_chair.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Chair: sit down</div>
+  <div><video src="static/videos/terrain_rp1_stairs.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Stairs: climb up</div>
+  <div><video src="static/videos/terrain_rp1_wall.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Wall: lean on it</div>
+  <div><video src="static/videos/terrain_rp1_ladder.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Ladder</div>
+</div>
+<p class="note">Training clips with their inferred boxes, rolled out in MuJoCo by the terrain-trained policies; the robot
+  is solid, the reference a blue ghost. Examples chosen by us; the success rates are in the table above.</p>
+
+<h2 id="recipe">The PartyMimic recipe and what matters most</h2>
+<p>PartyMimic trains with BPTT: the policy gradient is the derivative of an analytic tracking reward through 32 imagined
+  steps of a learned world model, closed by the critic's value gradient &nabla;<sub>s</sub>V. The defaults of
+  <code>python -m partymimic.train</code> are this recipe. Effects are the change when a factor is removed (G1, held-out
+  Loc/Man error, ablations on the earlier 9,173-clip library).</p>
+<div class="scroll"><table>
+  <tr><th>Factor</th><th>Setting</th><th class="n">Effect when removed</th><th>Why</th></tr>
+  <tr><td>Muon optimizer</td><td><code>--pi_opt muon --wm_opt muon</code></td><td class="n">+10.7 mm (Dance +25)</td>
+      <td>Orthogonalized updates keep the rare motions' nearly orthogonal gradients from being drowned by the majority.</td></tr>
+  <tr><td>Muon weight decay</td><td><code>--muon_wd 0.1</code></td><td class="n">&minus;2.4 mm five-set mean</td>
+      <td>torch.optim.Muon's default decoupled decay; the only official SuperMimic choice that clearly helps PartyMimic.</td></tr>
+  <tr><td>Reward kernels</td><td><code>--std_scale 0.35</code></td><td class="n">0.6: within noise; 1.0: +5.5 mm</td>
+      <td>Narrower than BeyondMimic's 1.0 so BPTT still has slope at cm-level errors.</td></tr>
+  <tr><td>Command lag in training</td><td><code>--act_lag 1,4</code></td><td class="n">RP1 under a 10&ndash;20 ms command delay: ankle chatter 0.39&deg; &rarr; 1.37&deg;, foot slip 1.03 &rarr; 2.22 cm/s</td>
+      <td>New joint targets reach the actuators 5&ndash;20 ms late in training, as on a topic-based deployment stack; without it the policy turns the delay into chatter (see <a href="#sim2real">Sim2real</a>).</td></tr>
+  <tr><td>Horizon 32</td><td><code>--horizon 32</code></td><td class="n">16 steps: +5.9 mm</td>
+      <td>Shorter chains lean on &nabla;<sub>s</sub>V, which is only loosely fit.</td></tr>
+  <tr><td>Reference-action skip</td><td><code>--pi_ref_skip</code></td><td class="n">+5.6 mm</td>
+      <td>The network refines the next reference pose instead of rebuilding it.</td></tr>
+  <tr><td>Policy EMA</td><td><code>--pi_ema 0.995</code></td><td class="n">+3.4 mm</td>
+      <td>Single updates are noisy at this batch size; the average removes the noise.</td></tr>
+  <tr><td>Evaluator's collision model</td><td><code>--robot g1mj</code></td><td class="n">LAFAN falls 14/40 vs 3/40</td>
+      <td>The policy exploits whatever contacts the world model learned from the training simulator.</td></tr>
+  <tr><td>Value-gradient consistency</td><td><code>--v_gcons 0.5</code></td><td class="n">+1.0 mm</td>
+      <td>Fits &nabla;<sub>s</sub>V to the true return gradient already computed by the backward pass.</td></tr>
+  <tr><td>Diversity-balanced resets</td><td><code>--div_k 24</code></td><td class="n">Ground +6&ndash;19 mm</td>
+      <td>Resets spread over motion clusters instead of duration, so ground motions get 30% of them instead of 8%.</td></tr>
+  <tr><td>Self-imitation</td><td><code>--sil 1</code></td><td class="n">+0.5 mm early</td>
+      <td>Real better-than-V actions guide the policy while the world model and critic are still inaccurate.</td></tr>
+</table></div>
+
+<h2 id="supermimic">Why SuperMimic works: full-factor ablation</h2>
+<p><b>PPO and SuperMimic differ in where the policy gradient comes from.</b> In PPO the simulator is a black box:
+  each sample contributes one advantage that scales &nabla;<sub>&theta;</sub>log&nbsp;&pi;(a|s). SuperMimic fits a
+  world model on real steps, unrolls the policy 32 steps inside it, scores every imagined state with the analytic
+  tracking reward and the last one with the critic, and backpropagates through the whole chain, so every state tells
+  its action which way to move.</p>
+<figure class="wide">
+  <video src="static/videos/ppo_vs_wm_arch.mp4" autoplay muted loop playsinline controls preload="metadata"></video>
+  <figcaption>One training iteration of each method: forward data flow (blue), then the backward gradient flow (red).
+    In SuperMimic the world model is frozen during the policy step and the same policy weights &theta; are used at
+    every imagined step; c<sub>t</sub> is the soft survival probability and the critic is fit on GAE(&lambda;) targets of the
+    imagined rollouts.</figcaption>
+</figure>
+<p>Stage 1 of the study ablated SuperMimic itself, factor by factor, on our reimplementation (LAFAN-40, G1,
+  6,000 iterations per variant, one variant per factor). The score is the normalized evaluation return (mean of the
+  last two evaluations, deterministic policy). The baseline over 3 seeds is 0.686 &plusmn; 0.048, and single-seed
+  |z| &lt; 1.5 counts as noise. Δ is the change from the baseline.</p>
+<figure>
+  <img src="static/ablation.png" alt="Change of the LAFAN-40 evaluation return from the baseline for every SuperMimic ablation variant, grouped by factor and coloured by verdict">
+  <figcaption>Each bar is one variant's Δ from the baseline, sorted within its factor group; colour is the verdict in the
+    table below, and the grey band is the baseline's seed spread. The three mechanism cuts that score 0.00
+    (<code>gwin1boot</code>, <code>onestep</code>, <code>wmfreeze</code>) run off the scale.</figcaption>
+</figure>
+<details open><summary>All variants</summary>
+<div class="scroll"><table>
+  <tr><th>Variant</th><th>What it tests</th><th class="n">Score</th><th class="n">&Delta;</th><th>Verdict</th></tr>
+<tr class="grp"><td colspan="5">Baseline (3 seeds)</td></tr>
+<tr class="neutral"><td><code>base_s0</code> seed 0</td><td>seed noise</td><td>0.719</td><td>+0.038</td><td></td></tr>
+<tr class="neutral"><td><code>base_s1</code> seed 1</td><td>seed noise</td><td>0.658</td><td>-0.023</td><td></td></tr>
+<tr class="neutral"><td><code>base_s2</code> seed 2</td><td>seed noise</td><td>0.650</td><td>-0.023</td><td></td></tr>
+<tr class="grp"><td colspan="5">World model</td></tr>
+<tr class="neutral"><td><code>k1</code> WM rollout loss window 8 → 1</td><td>multi-step autoregressive vs one-step model loss</td><td>0.656</td><td>-0.017</td><td>no clear effect</td></tr>
+<tr class="trend-worse"><td><code>k16</code> WM rollout loss window 8 → 16</td><td>longer autoregressive window</td><td>0.619</td><td>-0.054</td><td>worse (trend)</td></tr>
+<tr class="trend-worse"><td><code>wmworld</code> invariant increments → raw world-frame state deltas</td><td>naive MBRL parameterization (no translation / yaw invariance)</td><td>0.621</td><td>-0.052</td><td>worse (trend)</td></tr>
+<tr class="neutral"><td><code>noerrfloor</code> no error floor in the WM loss</td><td>near-constant components dominating a std-normalized loss</td><td>0.666</td><td>-0.006</td><td>no clear effect</td></tr>
+<tr class="sig-worse"><td><code>wm512</code> WM width 2048 → 512</td><td>world-model capacity</td><td>0.535</td><td>-0.138</td><td>worse</td></tr>
+<tr class="neutral"><td><code>wmonly0</code> WM-only warm-up 500 → 0 iterations</td><td>need for a model-only phase</td><td>0.692</td><td>+0.019</td><td>no clear effect</td></tr>
+<tr class="sig-worse"><td><code>wmb2</code> WM batches per iteration 10 → 2</td><td>amount of world-model fitting</td><td>0.520</td><td>-0.153</td><td>worse</td></tr>
+<tr class="trend-better"><td><code>wmb20</code> WM batches per iteration 10 → 20</td><td>more world-model fitting</td><td>0.721</td><td>+0.048</td><td>better (trend)</td></tr>
+<tr class="neutral"><td><code>wm4l</code> WM 3 → 4 layers</td><td>more world-model capacity</td><td>0.696</td><td>+0.024</td><td>no clear effect</td></tr>
+<tr class="grp"><td colspan="5">Policy optimization</td></tr>
+<tr class="sig-worse"><td><code>nocritic</code> no critic bootstrap</td><td>role of the critic at H = 32</td><td>0.428</td><td>-0.253</td><td>worse</td></tr>
+<tr class="sig-worse"><td><code>h8</code> horizon 32 → 8</td><td>short horizon (bias from the critic)</td><td>0.430</td><td>-0.250</td><td>worse</td></tr>
+<tr class="neutral"><td><code>h64</code> horizon 32 → 64</td><td>long horizon (gradient variance / explosion)</td><td>0.661</td><td>-0.012</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>noclip</code> no gradient clipping</td><td>is clipping needed</td><td>0.692</td><td>+0.020</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>noclipv</code> no element-wise 0.1 clip</td><td>does the element-wise clip act</td><td>0.663</td><td>-0.010</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>beta999</code> Adam β2 0.95 → 0.999</td><td>second-moment adaptation speed</td><td>0.708</td><td>+0.035</td><td>no clear effect</td></tr>
+<tr class="trend-better"><td><code>out1</code> output-layer init 0.01 → 1 (3 seeds)</td><td>small init (initial action ≈ default pose)</td><td>0.713</td><td>+0.040</td><td>better (trend)</td></tr>
+<tr class="trend-worse"><td><code>ln</code> LayerNorm in the actor</td><td>does LN slow learning</td><td>0.604</td><td>-0.069</td><td>worse (trend)</td></tr>
+<tr class="neutral"><td><code>floor4</code> input-normalizer floor 1e-2 → 1e-4</td><td>normalizer floor</td><td>0.670</td><td>-0.003</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>survhard</code> soft survival weight → hard termination</td><td>differentiable termination probability</td><td>0.672</td><td>-0.000</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>survnone</code> no survival weight</td><td>role of the termination signal</td><td>0.648</td><td>-0.025</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>noimagnoise</code> no sensor noise in imagination</td><td>noise as regularizer / deployment consistency</td><td>0.674</td><td>+0.002</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>nocerr</code> critic without tracking-error inputs</td><td>critic features</td><td>0.677</td><td>+0.004</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>vclip</code> critic output clipped to ±10</td><td>community fix against value divergence</td><td>0.703</td><td>+0.031</td><td>no clear effect</td></tr>
+<tr class="sig-worse"><td><code>lr1e4</code> lr 2e-4 → 1e-4</td><td>learning rate</td><td>0.591</td><td>-0.081</td><td>worse</td></tr>
+<tr class="trend-better"><td><code>lr4e4</code> lr 2e-4 → 4e-4 (3 seeds)</td><td>learning rate (community choice)</td><td>0.726</td><td>+0.054</td><td>better (trend)</td></tr>
+<tr class="sig-better"><td><code>lr6e4</code> lr 2e-4 → 6e-4 (3 seeds)</td><td>learning rate</td><td>0.750</td><td>+0.077</td><td>better</td></tr>
+<tr class="sig-better"><td><code>ema</code> policy EMA 0.995 (3 seeds)</td><td>weight averaging (community)</td><td>0.761</td><td>+0.089</td><td>better</td></tr>
+<tr class="trend-worse"><td><code>lam0</code> critic target λ 0.95 → 0</td><td>bias / variance of the critic target</td><td>0.628</td><td>-0.045</td><td>worse (trend)</td></tr>
+<tr class="neutral"><td><code>lam1</code> critic target λ 0.95 → 1</td><td>bias / variance of the critic target</td><td>0.701</td><td>+0.028</td><td>no clear effect</td></tr>
+<tr class="trend-worse"><td><code>gamma097</code> discount γ 0.99 → 0.97</td><td>effective horizon and value scale</td><td>0.624</td><td>-0.048</td><td>worse (trend)</td></tr>
+<tr class="neutral"><td><code>cep1</code> critic epochs 5 → 1</td><td>critic fitting strength</td><td>0.652</td><td>-0.021</td><td>no clear effect</td></tr>
+<tr class="sig-worse"><td><code>h16</code> horizon 32 → 16</td><td>horizon curve</td><td>0.596</td><td>-0.077</td><td>worse</td></tr>
+<tr class="neutral"><td><code>h48</code> horizon 32 → 48</td><td>longer gradient chain</td><td>0.702</td><td>+0.029</td><td>no clear effect</td></tr>
+<tr class="sig-better"><td><code>emalr6</code> EMA 0.995 + lr 6e-4</td><td>EMA × higher learning rate</td><td>0.825</td><td>+0.153</td><td>better</td></tr>
+<tr class="sig-better"><td><code>emalr8</code> EMA 0.995 + lr 8e-4</td><td>EMA × higher learning rate</td><td>0.816</td><td>+0.143</td><td>better</td></tr>
+<tr class="grp"><td colspan="5">Data and curriculum</td></tr>
+<tr class="neutral"><td><code>noise0</code> action noise 0.1 → 0</td><td>identifiability of ∂f/∂a</td><td>0.692</td><td>+0.020</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>noise03</code> action noise 0.1 → 0.3</td><td>wider action coverage</td><td>0.696</td><td>+0.023</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>clean50</code> half the worlds collect without noise</td><td>covariate shift (community)</td><td>0.707</td><td>+0.034</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>uniform</code> return-based reset sampling → uniform</td><td>adaptive curriculum</td><td>0.657</td><td>-0.016</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>noepcap</code> no 500-step episode cap</td><td>episode length</td><td>0.643</td><td>-0.029</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>utd1</code> UTD 0.4 → 1.0</td><td>less fresh data</td><td>0.669</td><td>-0.004</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>utd02</code> UTD 0.4 → 0.2</td><td>more fresh data</td><td>0.660</td><td>-0.013</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>buf100</code> replay 1000 → 100 steps</td><td>freshness vs diversity</td><td>0.656</td><td>-0.016</td><td>no clear effect</td></tr>
+<tr class="grp"><td colspan="5">Observation interface</td></tr>
+<tr class="sig-worse"><td><code>paperobs</code> no reference-anchor relative orientation</td><td>paper observation (strongest community factor)</td><td>0.484</td><td>-0.188</td><td>worse</td></tr>
+<tr class="sig-better"><td><code>noselfcol</code> self-collision off (3 seeds)</td><td>contact complexity (falls 33/40 on the leaderboard evaluator)</td><td>0.739</td><td>+0.067</td><td>better</td></tr>
+<tr class="sig-better"><td><code>vibed</code> supermimic_vibed interface (3 seeds)</td><td>pelvis anchor + reference goal + relative obs + no self-collision</td><td>0.749</td><td>+0.076</td><td>better</td></tr>
+<tr class="grp"><td colspan="5">Gradient paths and mechanism</td></tr>
+<tr class="sig-worse"><td><code>gwin8</code> H = 32, gradient cut every 8 steps</td><td>critic share vs gradient-chain length</td><td>0.525</td><td>-0.147</td><td>worse</td></tr>
+<tr class="sig-worse"><td><code>onestep</code> one-step model gradient only</td><td>multi-step Jacobian propagation</td><td>0.002</td><td>-0.670</td><td>worse</td></tr>
+<tr class="sig-worse"><td><code>noobsgrad</code> no gradient through the observation feedback</td><td>closed-loop (corrective) gradient</td><td>0.517</td><td>-0.156</td><td>worse</td></tr>
+<tr class="sig-worse"><td><code>wmfreeze</code> freeze the WM after 1000 iterations</td><td>on-policy refitting / model exploitation</td><td>0.004</td><td>-0.668</td><td>worse</td></tr>
+<tr class="neutral"><td><code>noxi</code> WM and critic without ξ</td><td>deterministic model conditioned on known randomness</td><td>0.695</td><td>+0.023</td><td>no clear effect</td></tr>
+<tr class="neutral"><td><code>curstart</code> imagine only from the 10 newest steps</td><td>diversity of the Dyna start states</td><td>0.640</td><td>-0.032</td><td>no clear effect</td></tr>
+<tr class="sig-worse"><td><code>gwin1boot</code> gradient cut every step, V at every step</td><td>long chain vs ∇V at the cut (SVG(1)-style)</td><td>0.001</td><td>-0.671</td><td>worse</td></tr>
+<tr class="sig-worse"><td><code>gwin8boot</code> gradient cut every 8 steps, V at the cuts</td><td>same, SHAC-style</td><td>0.416</td><td>-0.256</td><td>worse</td></tr>
+<tr class="sig-worse"><td><code>vstopgrad</code> no state gradient through the terminal V</td><td>does the policy use ∇V</td><td>0.543</td><td>-0.130</td><td>worse</td></tr>
+<tr class="sig-worse"><td><code>wmfreeze4k</code> freeze the WM after 4000 iterations</td><td>is refitting needed once the model is good</td><td>0.507</td><td>-0.166</td><td>worse</td></tr>
+<tr class="grp"><td colspan="5">Stage-2 additions</td></tr>
+<tr class="trend-worse"><td><code>medclip</code> per-sample action gradient ≤ 3 × median</td><td>heavy-tailed contact gradients (NablaMimic)</td><td>0.613</td><td>-0.060</td><td>worse (trend)</td></tr>
+<tr class="trend-better"><td><code>piup2</code> 2 policy updates per iteration</td><td>updates vs wall-clock</td><td>0.723</td><td>+0.050</td><td>better (trend)</td></tr>
+<tr class="sig-better"><td><code>piup4</code> 4 policy updates per iteration</td><td>updates vs wall-clock (2.2× slower per iteration)</td><td>0.781</td><td>+0.109</td><td>better</td></tr>
+</table></div>
+</details>
+<h3>Conclusions: what dominates and why</h3>
+<ul class="tight">
+  <li><b>The multi-step gradient through an online-refit world model <i>is</i> the method.</b>
+    Keeping only the one-step model gradient (<code>onestep</code>, <code>gwin1boot</code>) gives a score of 0.00,
+    and so does freezing the world model after 1,000 iterations (<code>wmfreeze</code>). With only one model step
+    the policy follows the critic's &nabla;<sub>s</sub>V, which nothing supervises. A frozen model is exploited
+    as soon as the policy leaves the region where it is accurate.</li>
+  <li><b>The horizon and the critic split the work.</b> Without the critic (0.43), with H = 8 (0.43) or with
+    H = 16 (0.60), results are clearly worse, while H = 48 or 64 brings no gain. Short chains rely on the
+    inaccurate &nabla;<sub>s</sub>V; longer chains only add variance. The terminal &nabla;V still matters
+    (<code>vstopgrad</code> 0.54), but as a tail correction rather than the main signal.</li>
+  <li><b>The closed-loop observation path carries most of the useful gradient</b>
+    (<code>noobsgrad</code> 0.52, <code>gwin8</code> 0.53). The gradient of how the next observation, and hence
+    the next correction, depends on the state is what teaches feedback control.</li>
+  <li><b>Model error becomes gradient error.</b> A smaller world model (<code>wm512</code> 0.54) or less model
+    fitting (<code>wmb2</code> 0.52) hurts directly; more fitting (<code>wmb20</code>) helps only slightly.</li>
+  <li><b>The observation needs the reference relative to the robot</b> (<code>paperobs</code> 0.48). Over long
+    clips, yaw drift is otherwise unobservable.</li>
+  <li><b>Optimization knobs</b>: policy EMA (+0.09, 3 seeds) and a 2&ndash;3&times; higher learning rate help, and
+    combined they give the best result (<code>emalr6</code> 0.83). These carry over to PartyMimic.
+    Everything else (&lambda;, critic epochs, action noise, UTD, replay size, reset distribution, survival weighting)
+    is within noise.</li>
+  <li><b>Caveat:</b> turning off self-collision scores <i>better</i> here (+0.07, 3 seeds), but 33 of 40 LAFAN clips
+    then fall on the leaderboard evaluator. Any factor that changes the simulator must be re-checked under the
+    deployment evaluator. This is why PartyMimic trains on the evaluator's collision model.</li>
+</ul>
+
+<h3 id="official-on-pm">Official SuperMimic choices on PartyMimic (full library)</h3>
+<p>After the official code opened, we ported its design choices as switches and tested each one on PartyMimic's
+  full library (mix_kf, 10,731 clips, 12,000 iterations, G1). Score: mean body-position error over Loco/Mani,
+  Ground, Dance, Extreme and XM14 (mm, lower is better). The ported row turns every official choice on and
+  PartyMimic's extras off; the official code itself, on a rebuilt mjlab interface, is in the <a href="#results">results</a>.</p>
+<div class="scroll"><table>
+  <tr><th>Change on PartyMimic</th><th class="n">Seeds</th><th class="n">Five-set mean</th><th class="n">Time</th><th class="n">VRAM</th><th>Verdict</th></tr>
+  <tr><td>Prior defaults (<code>std_scale 0.35</code>, <code>muon_wd 0</code>)</td><td class="n">5</td><td class="n">54.7</td><td class="n">0.44 h</td><td class="n">22 GB</td><td>baseline</td></tr>
+  <tr class="sig-better"><td><b>+ <code>--muon_wd 0.1</code></b></td><td class="n">4</td><td class="n"><b>52.3</b></td><td class="n">0.45 h</td><td class="n">22 GB</td><td>better tracking</td></tr>
+  <tr class="neutral"><td>+ <code>--muon_wd 0.1 --std_scale 0.6</code></td><td class="n">4</td><td class="n">54.3</td><td class="n">0.52 h</td><td class="n">22 GB</td><td>same tracking, smoother</td></tr>
+  <tr class="neutral"><td>+ policy LN-GELU</td><td class="n">3</td><td class="n">53.0</td><td class="n">0.51 h</td><td class="n">26 GB</td><td>noise / cost</td></tr>
+  <tr class="neutral"><td>+ soft-termination max</td><td class="n">2</td><td class="n">53.2</td><td class="n">0.44 h</td><td class="n">22 GB</td><td>noise</td></tr>
+  <tr class="neutral"><td>+ <code>v_max</code> clamp</td><td class="n">1</td><td class="n">53.2</td><td class="n">0.45 h</td><td class="n">22 GB</td><td>noise</td></tr>
+  <tr class="neutral"><td>+ WM 10 batches / iter</td><td class="n">1</td><td class="n">52.9</td><td class="n">0.52 h</td><td class="n">22 GB</td><td>noise</td></tr>
+  <tr class="neutral"><td>+ goal stride 5</td><td class="n">2</td><td class="n">53.9</td><td class="n">0.44 h</td><td class="n">22 GB</td><td>noise</td></tr>
+  <tr class="neutral"><td>+ official ReturnSampler (keep fail/div shares)</td><td class="n">1</td><td class="n">54.0</td><td class="n">0.44 h</td><td class="n">22 GB</td><td>noise</td></tr>
+  <tr class="sig-worse"><td>+ ReturnSampler alone (drop fail/div)</td><td class="n">1</td><td class="n">60.1</td><td class="n">0.45 h</td><td class="n">22 GB</td><td>worse</td></tr>
+  <tr class="sig-worse"><td>+ reward kernel 1.0</td><td class="n">2</td><td class="n">59.8</td><td class="n">0.58 h</td><td class="n">22 GB</td><td>worse tracking</td></tr>
+  <tr class="sig-worse"><td>+ action-rate penalty &minus;0.25</td><td class="n">4</td><td class="n">56.9</td><td class="n">0.47 h</td><td class="n">22 GB</td><td>smoother, worse tracking</td></tr>
+  <tr class="sig-worse"><td>Official SuperMimic (ported, fp32)</td><td class="n">2</td><td class="n">68.6</td><td class="n">1.60 h</td><td class="n">32 GB</td><td>far worse</td></tr>
+</table></div>
+<p class="note">Only Muon weight decay clearly improves PartyMimic; the defaults keep it. Widening the reward kernel to
+  0.6 keeps the five-set mean within noise of the prior defaults and improves foot slip and action smoothness under
+  deployment-like perturbations (<a href="#sim2real">Sim2real</a>); the defaults keep 0.35 and train with a command lag
+  instead, which targets the chatter a deployment stack's latency causes. Everything else from the official release is noise or worse
+  on this library; dropping PartyMimic's failure / diversity reset shares hurts a lot.</p>
+
+<h3 id="long">Training to 320k: what the long-run recipe rests on</h3>
+<p>Every result above is at 12,000 iterations. To choose a recipe for longer runs we trained PartyMimic (release recipe
+  plus each guard, G1, MLP) toward 320k iterations on the full library (mix_kf, 10,731 clips) and scored every saved
+  checkpoint: lib500 (500 training clips) and the leaderboard sets. A diverged run is not restarted; the divergence is
+  the result.</p>
+<figure class="wide">
+  <img src="static/stability.png" alt="lib500 error at each checkpoint and critic-loss drift over training for every run trained toward 320k iterations with the collection noise">
+  <figcaption>Runs trained with the release collection noise. Left: lib500 body position error at the saved checkpoints
+  (x marks an abrupt divergence). Right: critic loss (20-row mean) over its minimum so far after 3k iterations; above
+  2.5 counts as a drift warning.</figcaption>
+</figure>
+<div class="scroll"><table>
+  <tr><th>Guards</th><th class="n">Seed</th><th class="n">lib500 mm<br>96k / 160k / 200k / 260k / 320k</th><th class="n">End: L/M &middot; Ground &middot; Dance mm (completion)</th><th class="n">Critic loss<br>end / min</th><th>Accuracy check</th></tr>
+  <tr class="sig-worse"><td>No guards (release)</td><td class="n">0</td><td class="n">19.6 / &ndash; / &ndash; / &ndash; / &ndash;</td><td class="n">23.3 &middot; 71.2 (78%) &middot; 37.2 (95%) <small>at 96k</small></td><td class="n">&ndash;</td><td>abrupt divergence at 143.1k</td></tr>
+  <tr class="sig-worse"><td></td><td class="n">1</td><td class="n">19.5 / 19.0 / &ndash; / &ndash; / 21.2</td><td class="n">24.5 &middot; 73.2 (87%) &middot; 37.3 (95%)</td><td class="n">&times;7.7</td><td>lib500 2.2 mm above its earlier best at 320k; critic drift warning from 118.2k (&times;7.7 at the end)</td></tr>
+  <tr class="sig-worse"><td>Critic Adam &beta;2 0.95<small><code>--v_beta2 0.95</code></small></td><td class="n">0</td><td class="n">19.7 / &ndash; / &ndash; / &ndash; / &ndash;</td><td class="n">23.5 &middot; 68.4 (82%) &middot; 37.6 (95%) <small>at 96k</small></td><td class="n">&ndash;</td><td>abrupt divergence at 102.8k</td></tr>
+  <tr class="sig-worse"><td>Gradient-consistency floor<small><code>--gc_den_floor 1.0</code></small></td><td class="n">0</td><td class="n">19.8 / 20.3 / 60.1 / &ndash; / &ndash;</td><td class="n">24.4 &middot; 64.2 (90%) &middot; 37.3 (98%) <small>at 160k</small></td><td class="n">&ndash;</td><td>abrupt divergence at 229.6k</td></tr>
+  <tr class=""><td>V clip + spike skip<small><code>--v_clip 10 --wm_guard 5 --v_guard 5</code></small></td><td class="n">0</td><td class="n">19.2 / 18.9 / 18.5 / 18.5 / 18.4</td><td class="n">23.7 &middot; 68.3 (88%) &middot; 36.4 (95%)</td><td class="n">&times;1.3</td><td>pass</td></tr>
+  <tr class=""><td></td><td class="n">1</td><td class="n">19.9 / 18.6 / &ndash; / &ndash; / 18.1</td><td class="n">24.3 &middot; 67.3 (83%) &middot; 37.1 (95%)</td><td class="n">&times;1.0</td><td>pass</td></tr>
+  <tr class="sig-worse"><td></td><td class="n">2</td><td class="n">19.7 / 19.6 / 19.8 / 22.6 / 26.5</td><td class="n">29.0 &middot; 85.2 (68%) &middot; 40.6 (82%)</td><td class="n">&times;22.2</td><td>lib500 3.0 mm above its earlier best at 260k; critic drift warning from 72.9k (&times;22.2 at the end)</td></tr>
+  <tr class=""><td>V clip + spike skip + floor (homepage runs)<small><code>--v_clip 10 --wm_guard 5 --v_guard 5 --gc_den_floor 1.0</code></small></td><td class="n">0</td><td class="n">19.3 / 18.8 / 18.4 / 18.3 / 18.3</td><td class="n">23.8 &middot; 66.8 (83%) &middot; 36.8 (98%)</td><td class="n">&times;1.2</td><td>pass; critic drift warning from 168.2k, recovered</td></tr>
+  <tr class=""><td></td><td class="n">1</td><td class="n">19.2 / 19.5 / &ndash; / &ndash; / 20.1</td><td class="n">25.1 &middot; 72.2 (73%) &middot; 38.5 (88%)</td><td class="n">&times;1.8</td><td>pass</td></tr>
+  <tr class="sig-worse"><td></td><td class="n">2</td><td class="n">19.3 / 19.7 / 25.6 / 36.8 / 45.9</td><td class="n">43.8 &middot; 86.3 (27%) &middot; 48.5 (42%)</td><td class="n">&times;10.4</td><td>lib500 6.3 mm above its earlier best at 200k; critic drift warning from 143.1k (&times;10.4 at the end)</td></tr>
+  <tr class=""><td>V clip + spike skip, raw-output loss<small><code>--v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5</code></small></td><td class="n">0</td><td class="n">18.7 / 18.0 / 17.9 / 17.9 / 17.7</td><td class="n">22.5 &middot; 71.0 (90%) &middot; 36.2 (95%)</td><td class="n">&times;2.1</td><td>pass; critic drift warning from 199.2k, recovered</td></tr>
+  <tr class=""><td></td><td class="n">1</td><td class="n">18.7 / 18.1 / 18.0 / 17.9 / 18.0</td><td class="n">23.4 &middot; 67.4 (88%) &middot; 36.3 (98%)</td><td class="n">&times;1.1</td><td>pass</td></tr>
+  <tr class=""><td></td><td class="n">2</td><td class="n">18.9 / 18.7 / 18.4 / 18.4 / 18.2</td><td class="n">23.1 &middot; 69.0 (78%) &middot; 36.8 (98%)</td><td class="n">&times;3.7</td><td>pass; critic drift warning from 66.7k (&times;3.7 at the end)</td></tr>
+  <tr class=""><td></td><td class="n">3</td><td class="n">18.6 / 18.3 / 18.1 / 18.0 / 18.1</td><td class="n">23.4 &middot; 69.2 (85%) &middot; 36.8 (98%)</td><td class="n">&times;1.2</td><td>pass; critic drift warning from 180.1k, recovered</td></tr>
+  <tr class="sig-worse"><td>V clip + spike skip + floor, raw-output loss<small><code>--v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5 --gc_den_floor 1.0</code></small></td><td class="n">0</td><td class="n">19.3 / 18.7 / 18.7 / 22.2 / 23.8</td><td class="n">24.7 &middot; 71.9 (83%) &middot; 39.6 (90%)</td><td class="n">&times;1.3</td><td>lib500 3.5 mm above its earlier best at 260k</td></tr>
+  <tr class=""><td></td><td class="n">1</td><td class="n">19.2 / 19.2 / 18.6 / 18.7 / 19.4</td><td class="n">24.1 &middot; 68.6 (83%) &middot; 37.0 (95%)</td><td class="n">&times;1.5</td><td>pass; critic drift warning from 233.8k, recovered</td></tr>
+  <tr class=""><td></td><td class="n">2</td><td class="n">19.2 / 18.9 / 18.3 / 18.3 / 18.2</td><td class="n">23.7 &middot; 68.1 (92%) &middot; 37.2 (95%)</td><td class="n">&times;1.7</td><td>pass; critic drift warning from 221.9k, recovered</td></tr>
+  <tr class=""><td></td><td class="n">3</td><td class="n">19.1 / 18.5 / 18.3 / 18.3 / 18.8</td><td class="n">23.6 &middot; 69.2 (85%) &middot; 36.5 (92%)</td><td class="n">&times;4.4</td><td>pass; critic drift warning from 223.0k (&times;4.4 at the end)</td></tr>
+  <tr class="sig-worse"><td>No guards, no collection noise<small><code>--action_noise 0</code></small></td><td class="n">0</td><td class="n">19.6 / 18.8 / 18.6 / 188.5 / 270.6</td><td class="n">270.4 &middot; 255.0 (0%) &middot; 264.3 (0%)</td><td class="n">&ndash;</td><td>abrupt divergence at 237.1k</td></tr>
+  <tr class="sig-worse"><td></td><td class="n">1</td><td class="n">19.5 / 18.8 / 18.6 / 18.8 / 18.8</td><td class="n">24.2 &middot; 67.3 (90%) &middot; 37.2 (95%)</td><td class="n">&times;5.5</td><td>L/M 1.1 mm above its earlier best at 320k; critic drift warning from 205.6k (&times;5.5 at the end)</td></tr>
+  <tr class=""><td></td><td class="n">2</td><td class="n">19.3 / 18.7 / 18.4 / 18.6 / 18.6</td><td class="n">23.3 &middot; 65.6 (92%) &middot; 37.0 (95%)</td><td class="n">&times;2.0</td><td>pass; critic drift warning from 174.9k, recovered</td></tr>
+  <tr class="sig-better"><td>V clip + spike skip, raw-output loss, no collection noise (long-run recipe)<small><code>--v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5 --action_noise 0</code></small></td><td class="n">0</td><td class="n">19.5 / 18.5 / 18.6 / 18.3 / 18.3</td><td class="n">24.1 &middot; 71.4 (90%) &middot; 36.8 (98%)</td><td class="n">&times;6.9</td><td>pass; critic drift warning from 291.2k (&times;6.9 at the end)</td></tr>
+  <tr class="sig-better"><td></td><td class="n">1</td><td class="n">19.4 / 18.9 / 18.7 / 18.7 / 18.6</td><td class="n">23.9 &middot; 69.1 (77%) &middot; 36.8 (95%)</td><td class="n">&times;1.5</td><td>pass; critic drift warning from 83.0k, recovered</td></tr>
+  <tr class="sig-better"><td></td><td class="n">2</td><td class="n">18.9 / 18.2 / 18.1 / 18.1 / 17.9</td><td class="n">23.3 &middot; 69.1 (90%) &middot; 36.8 (98%)</td><td class="n">&times;1.8</td><td>pass; critic drift warning from 105.0k, recovered</td></tr>
+  <tr class="sig-better"><td></td><td class="n">3</td><td class="n">19.1 / 18.7 / 18.4 / 18.3 / 18.3</td><td class="n">23.4 &middot; 67.3 (88%) &middot; 36.3 (95%)</td><td class="n">&times;1.2</td><td>pass</td></tr>
+</table></div>
+<ul>
+  <li><b>Without guards a long run breaks.</b> Seed 0 diverges abruptly at 143.1k, after a disturbance
+    its sampling order reproduces; seed 1 survives, but its critic drifts from 118.2k and its lib500 ends
+    2.2 mm above its best. SuperMimic's Adam &beta;2 0.95 on the critic diverges earlier
+    (102.8k); the gradient-consistency floor alone only postpones it to 229.6k.</li>
+  <li><b>V clip + spike skip</b> carries seeds 0 and 1 through 320k while lib500 keeps improving
+    (19.2 &rarr; 18.4 and 19.9 &rarr;
+    18.1 mm from 96k). Adding the floor (the guards of the homepage runs) passes on both.</li>
+  <li><b>A second failure: the policy comes to rely on the collection noise.</b> On seed 2 neither guard set diverges
+    and the training reward does not move, yet accuracy collapses after 160k (lib500 26.5 and
+    45.9 mm at 320k). The release recipe adds Gaussian noise (std 0.1) to every action it
+    collects, and the policy reads its last applied action, so the noise is part of its own input. Evaluated with that
+    noise, the collapsed checkpoints recover: clips completed from their first frame
+    54.0% &rarr; 98.4% (with the floor) and
+    91.6% &rarr; 98.1% at 320k, back to their 160k
+    level, while a healthy checkpoint only loses 0.4&ndash;1.5 mm to the noise (figure below).
+    The same holds for the one floor run with the raw-output loss that fails (seed 0,
+    95.3% &rarr; 98.5% at 260k). Official
+    SuperMimic removed the collection noise for the same reason (bones_full at 300k iterations: 2,315 clean failures with
+    the noise, 1 without).</li>
+  <li><b>Dropping the noise (<code>--action_noise 0</code>) removes this failure but not the critic's.</b> With V clip +
+    spike skip + raw-output loss, all 4 seeds pass: lib500 17.9&ndash;18.6 mm at 320k
+    (0.3 mm behind the same guards with the noise, 17.7&ndash;18.2 mm over 4 seeds) and
+    L/M 23.3&ndash;24.1 mm, and none of its checkpoints does better with the noise added. Without the guards,
+    dropping the noise is not enough: seed 0 diverges abruptly at 237.1k, seed 1 fails the accuracy check
+    (L/M 1.1 mm above its earlier best at 320k) and only seed 2 passes. The floor is dropped: with the raw-output loss it fails on
+    1 of 4 seeds with the noise and adds nothing the other guards do not.</li>
+</ul>
+<p>The long-run recipe (seed 3 of the table) on one held-out Dance clip at 80k / 160k / 240k / 320k iterations:</p>
+<div class="videos"><div><video src="static/videos/g1_long320.mp4" autoplay muted loop playsinline controls
+  preload="metadata"></video></div></div>
+<p class="note">DAN_cant_stop_the_feeling, 24&ndash;39 s of the 138 s clip,
+  evaluator rollouts (MuJoCo, deterministic policy) played in sync. The reference (blue
+  ghost) is drawn at the robot's root position and heading, so the root drift a long clip accumulates does not separate
+  the two. Error over the whole clip 38.3 / 36.6 / 36.8 / 37.2 mm; lib500
+  18.8 / 18.7 / 18.4 / 18.3 mm.</p>
+<figure class="wide">
+  <img src="static/noise.png" alt="lib500 over training with and without the collection noise, and clean against noisy evaluation of the same checkpoints">
+  <figcaption>Left: lib500 of the runs without guards and with the long-run guards, with and without the collection
+  noise (x: abrupt divergence; points above the axis are drawn at its top). Right: clips completed by the same
+  checkpoint evaluated clean and with the collection noise (1,024 library clips &times; 2 from their first frame,
+  <code>s2r_eval.py</code>).</figcaption>
+</figure>
+<p><b>Dropping the noise costs no robustness.</b> The 320k checkpoints under the sim-to-real perturbation suite
+  (<code>s2r_eval.py</code>, 1,024 library clips &times; 2 from their first frame; every condition but the clean one
+  starts from the training randomization; the no-guard run that diverged is left out). Clips completed &middot; body position
+  error in mm:</p>
+<div class="scroll"><table>
+  <tr><th>Condition</th><th class="n">No guards, no noise (2 seeds)</th><th class="n">Long-run recipe, no noise (3)</th><th class="n">Same guards, with noise (4)</th></tr>
+  <tr><td>Clean (deployment)</td><td class="n">98.5% &middot; 17.8</td><td class="n">97.7% &middot; 17.2</td><td class="n">98.2% &middot; 17.0</td></tr>
+  <tr><td>Action noise 0.1 (the collection noise)</td><td class="n">98.5% &middot; 19.2</td><td class="n">97.8% &middot; 18.8</td><td class="n">98.2% &middot; 18.4</td></tr>
+  <tr><td>Training randomization</td><td class="n">98.5% &middot; 19.3</td><td class="n">97.8% &middot; 18.8</td><td class="n">98.2% &middot; 18.6</td></tr>
+  <tr><td>Actuation 10 ms late</td><td class="n">98.4% &middot; 20.3</td><td class="n">97.8% &middot; 19.9</td><td class="n">98.1% &middot; 19.6</td></tr>
+  <tr><td>Sensors read 20 ms early</td><td class="n">97.6% &middot; 22.1</td><td class="n">97.3% &middot; 21.9</td><td class="n">97.3% &middot; 21.5</td></tr>
+  <tr><td>PD gains &times;0.75</td><td class="n">97.8% &middot; 49.0</td><td class="n">97.2% &middot; 51.8</td><td class="n">97.8% &middot; 53.1</td></tr>
+  <tr><td>Pushes every 1&ndash;3 s</td><td class="n">98.5% &middot; 25.9</td><td class="n">97.7% &middot; 24.4</td><td class="n">98.1% &middot; 24.3</td></tr>
+  <tr><td>Delay + PD &plusmn;15% + mass &plusmn;10% + pushes</td><td class="n">98.2% &middot; 28.6</td><td class="n">97.8% &middot; 27.5</td><td class="n">98.0% &middot; 27.4</td></tr>
+</table></div>
+<p>Without the noise the recipe completes within 0.6 points of the noisy runs under every perturbation, and
+  its error is at most 0.4 mm higher. Joint-target rate (0.83 against
+  0.84 rad/s), mechanical power (69 against 69 W)
+  and foot slip (2.1 against 2.1 cm/s) are unchanged. The same holds
+  for one motion trained alone: the release recipe on LAFAN1 dance1_subject2 (131 s) for 160k iterations, two seeds with
+  and without the noise, each checkpoint playing the whole clip 256 times from its first frame. Neither degrades (clean
+  error 13.3&ndash;13.6 mm, all completed, at 96k, 128k and 160k), and at 160k:</p>
+<div class="scroll"><table>
+  <tr><th>Condition</th><th class="n">One motion, with noise</th><th class="n">One motion, no noise</th></tr>
+  <tr><td>Clean (deployment)</td><td class="n">100.0% &middot; 13.4</td><td class="n">100.0% &middot; 13.3</td></tr>
+  <tr><td>Action noise 0.1 (the collection noise)</td><td class="n">100.0% &middot; 14.9</td><td class="n">100.0% &middot; 15.2</td></tr>
+  <tr><td>Training randomization</td><td class="n">100.0% &middot; 15.2</td><td class="n">100.0% &middot; 15.1</td></tr>
+  <tr><td>Actuation 10 ms late</td><td class="n">99.8% &middot; 19.0</td><td class="n">99.8% &middot; 19.1</td></tr>
+  <tr><td>Sensors read 20 ms early</td><td class="n">65.8% &middot; 26.9</td><td class="n">67.0% &middot; 26.6</td></tr>
+  <tr><td>PD gains &times;0.75</td><td class="n">76.6% &middot; 61.8</td><td class="n">71.9% &middot; 59.3</td></tr>
+  <tr><td>Pushes every 1&ndash;3 s</td><td class="n">99.0% &middot; 27.7</td><td class="n">98.6% &middot; 27.9</td></tr>
+  <tr><td>Delay + PD &plusmn;15% + mass &plusmn;10% + pushes</td><td class="n">94.9% &middot; 35.1</td><td class="n">94.5% &middot; 34.7</td></tr>
+</table></div>
+<p class="note">Accuracy check: a run passes when it does not diverge, when from 96k on no checkpoint's lib500 error is
+  more than 1.0 mm above, or its completion more than 2 points below, the best earlier
+  checkpoint, and when its 320k L/M is within 1.0 mm of its 160k L/M. Critic-loss drift (2.5&times; its
+  minimum) is reported as a warning only. The recipe, used for the 12,000-iteration PartyMimic results above as well:
+  <code>--v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5 --action_noise 0</code>; no guarded run fails before 160k. <code>--v_clip_raw</code> and
+  <code>--action_noise</code> (default 0.1) are release flags. The one-motion completions under PD gains &times;0.75 and
+  late sensors move by up to 20 points between the 96k and 160k checkpoints of one run, so two seeds do not separate the two
+  there.</p>
+
+<h2 id="sim2real">Sim2real-oriented evaluation</h2>
+<p>G1 actuators, action scale and default pose match the public mjlab BeyondMimic model used by official SuperMimic;
+  the gap people report on hardware is not from those. We score completion, body error, joint-target rate / jerk,
+  torque saturation and foot slip under perturbations the training never saw (delay, PD scale, mass, push, low
+  friction, soft foot contact). Same clips for every method.</p>
+<div class="scroll"><table>
+  <tr><th>Method</th><th class="n">Seeds</th><th class="n">Nominal % / mm</th><th class="n">Train DR jerk</th>
+      <th class="n">Combo slip cm/s</th><th class="n">Soft-foot slip cm/s</th></tr>
+  <tr><td>Prior defaults</td><td class="n">2</td><td class="n">98.2 / 18.1</td><td class="n">70</td><td class="n">5.72</td><td class="n">8.10</td></tr>
+  <tr><td>+ Muon wd 0.1</td><td class="n">2</td><td class="n">98.3 / 17.9</td><td class="n">68</td><td class="n">5.66</td><td class="n">8.22</td></tr>
+  <tr class="sig-better"><td>+ Muon wd 0.1, <code>std_scale 0.6</code></td><td class="n">4</td><td class="n">98.2 / 20.8</td><td class="n"><b>58</b></td><td class="n"><b>5.14</b></td><td class="n"><b>7.05</b></td></tr>
+  <tr><td>+ kernel 1.0</td><td class="n">2</td><td class="n">98.3 / 24.9</td><td class="n">52</td><td class="n">4.81</td><td class="n">6.49</td></tr>
+  <tr><td>+ action-rate &minus;0.25</td><td class="n">4</td><td class="n">98.0 / 18.7</td><td class="n">46</td><td class="n">5.29</td><td class="n">7.36</td></tr>
+  <tr><td>Official SuperMimic (ported)</td><td class="n">2</td><td class="n">97.7 / 33.8</td><td class="n">51</td><td class="n">5.40</td><td class="n">6.73</td></tr>
+</table></div>
+<p class="note">Completion stays &ge;96% under delay 20&nbsp;ms, PD&times;0.75, push and friction 0.25 for every method.
+  Switching the solver to the official 10 iterations changes nothing; soft-foot contact is where the prior recipe
+  slips more than the ported official policy. The 0.6 kernel closes most of that gap while keeping tracking far
+  ahead of the port (20.8 vs 33.8&nbsp;mm nominal). The released defaults keep <code>std_scale 0.35</code> and add the
+  command lag below.</p>
+
+<h3 id="latency">Deployment latency: command lag in training</h3>
+<p>A topic-based deployment stack (the sim2real ZMQ pipeline: 5&ndash;25 ms random latency) delivers joint targets late.
+  A policy trained without that delay turns it into ankle chatter and foot slip, most with the end-effector terms.
+  The defaults train with a command lag (<code>--act_lag 1,4</code>: new targets reach the actuators 5&ndash;20 ms late,
+  drawn per env). RP1, 12k iterations, 2 seeds, MotionDecode manipulation, actions 10&ndash;20 ms late and states
+  5&ndash;10 ms old:</p>
+<div class="scroll"><table>
+  <tr><th>Recipe</th><th class="n">Ankle chatter (&deg;)</th><th class="n">Joint-target jerk (rad/s&sup2;)</th><th class="n">Foot slip (cm/s)</th></tr>
+  <tr><td>Project-page recipe (no lag)</td><td class="n">1.40</td><td class="n">109</td><td class="n">3.75</td></tr>
+  <tr><td>+ command lag</td><td class="n">0.63</td><td class="n">33</td><td class="n">1.42</td></tr>
+  <tr class="ours"><td><b>Defaults</b> (lag, no clip allocation, no <code>--obs_err kp</code>)</td><td class="n"><b>0.39</b></td><td class="n"><b>27</b></td><td class="n"><b>1.03</b></td></tr>
+  <tr class="ref"><td>Defaults without latency</td><td class="n">0.32</td><td class="n">24</td><td class="n">0.98</td></tr>
+</table></div>
+<p class="note">Ankle chatter: high-frequency ankle-pitch RMS, 90th percentile over clips. Over all four MotionDecode
+  splits under the same latency the defaults keep jerk at 113 rad/s&sup2; and slip at 6.7 cm/s, against 350 and
+  13.3 cm/s for the project-page recipe.</p>
+
+<h3 id="real">Real-robot validation</h3>
+<div class="real">
+  <div class="videos pair">
+    <div><video src="static/videos/real_g1_sit_stand.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Unitree G1: sit down and stand up</div>
+    <div><video src="static/videos/real_g1_manip.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Unitree G1: fine manipulation</div>
+  </div>
+  <div class="videos stack">
+    <div><video src="static/videos/real_rp1_backflip.mp4" autoplay muted loop playsinline controls preload="metadata"></video>RoboParty RP1: backflip</div>
+    <div><video src="static/videos/real_rp1_teleop.mp4" autoplay muted loop playsinline controls preload="metadata"></video>RoboParty RP1: teleoperation</div>
+  </div>
+</div>
+<p class="note">PartyMimic policies on the physical robots.</p>
+
+<h2 id="use">Use it</h2>
+<p>Instructions for data, training, export and evaluation are in the
+  <a href="https://github.com/Roboparty/PartyMimic#readme">README</a>.</p>
+<ul>
+  <li>Data: <code>tools/data/build_library.sh g1</code> (LAFAN1, the BONES-SEED diversity subset, KungfuAthlete,
+    XtremeMotion, our kneeling and crawling clips shipped in the repository, and the Extreme test set), then
+    <code>rp1</code> for the RP1 retargets.</li>
+  <li>Default (MLP): <code>bash scripts/train.sh logs/g1 --robot g1mj --motion_dir data/motions/g1_mix</code></li>
+  <li>Attention encoder: add <code>--ref_enc xattn</code> (24 GB cards: also <code>--pi_batch 1024</code>).</li>
+  <li>Sparse keypoints: add <code>--interface sparse5</code>; export with <code>tools/export_deploy_onnx.py</code>.</li>
+  <li>Full BONES-SEED with terrain: <code>tools/data/build_library.sh bones_full</code>, then add
+    <code>--terrain</code> (boxes inferred and checked on the first run; RP1: <code>rp1_full</code>).</li>
+  <li>Two GPUs: add <code>--pipeline</code>. Fine-tune on a few clips before deployment: <code>--init &lt;run&gt;/last.pt</code>.</li>
+  <li>Trained checkpoints (MLP, joint references): <code>checkpoints/g1_mlp.pt</code> and <code>checkpoints/rp1_mlp.pt</code>.</li>
+  <li>Diversity analysis of a library: <code>tools/diversity/analyze.py</code>.</li>
+</ul>
+
+<h2 id="agent">Agent use</h2>
+<p>Inside RoboParty, PartyMimic already runs as the whole-body controller under a task agent,
+  <a href="https://arxiv.org/abs/2607.26056">INTACT</a>.</p>
+<ul>
+  <li><b>Data:</b> R2S (<a href="https://github.com/Roboparty/RP-SceneReal2Sim">RP-SceneReal2Sim</a>: an editable simulation scene from one RGB photo)
+    &rarr; generation (GPT, Seedance or a model-based generator) &rarr; PartyMimic. R2S takes the longest;
+    generation is fast, and fewer than 10 clips per task are enough. INTACT then trains in about 20 minutes.</li>
+  <li><b>Deployment:</b> INTACT &rarr; PartyMimic.</li>
+</ul>
+<div class="videos three">
+  <div><video src="static/videos/agent_fridge.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Put a bottle into the fridge: walk there, open the door, grasp the bottle on the counter, put it on the shelf</div>
+  <div><video src="static/videos/agent_can.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Pick up a can from the floor and carry it to the bin</div>
+  <div><video src="static/videos/agent_cap.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Unscrew a bottle cap: hold the bottle, pinch, turn, let go, turn back</div>
+  <div><video src="static/videos/agent_chair.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Move a chair: walk to it, lift it, carry it over, put it down</div>
+  <div><video src="static/videos/agent_stairs.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Climb the steps and pick up a bottle on the top step</div>
+</div>
+<p class="note">RoboParty RP1, replayed in simulation.</p>
+
+<h3 id="agent-vlm">A VLM planner on the keypoint interface</h3>
+<p>The sparse5 interface lets a planner command the robot without retargeting to joints. Qwen3.6-27B (local vLLM, no
+  thinking) sees the head camera and calls skills (walk_to, pick, place_on); a middle layer turns them into a 50 Hz
+  stream of six future keypoints (pelvis, torso, wrists, ankles) sent over the sim2real ZMQ protocol, and the RP1
+  sparse5 terrain policy tracks it. Task: walk to a table, pick up a box, carry it to the other table, put it on the
+  pad. Over 20 episodes: 14/20 closed loop (17/20 when the target is located once at planning time); Qwen3.6-35B-A3B
+  also 14/20 at a third of the latency.</p>
+<div class="videos">
+  <div><video src="static/videos/agent_qwen_t3.mp4" autoplay muted loop playsinline controls preload="metadata"></video>Left: third person. Right: the head camera the VLM sees. RP1 in MuJoCo, 4&times; speed.</div>
+</div>
+
+<h3 id="agent-load">Carrying loads</h3>
+<p>The policy never observes the load: a crate is welded to both hands in MuJoCo, and the policy (RP1, sparse5,
+  terrain-trained, with the hidden 0&ndash;2 kg wrist payload in training) tracks the reference as usual.</p>
+<div class="videos">
+  <div><video src="static/videos/payload_rp1_crate_walk.mp4" autoplay muted loop playsinline controls preload="metadata"></video>2 kg crate: walk 3.5 m in 8 s</div>
+  <div><video src="static/videos/payload_rp1_crate_box.mp4" autoplay muted loop playsinline controls preload="metadata"></video>1.5 kg crate: step up onto a box</div>
+</div>
+<p class="note">MuJoCo sim2sim; the hands are drawn as simple white hands of the DH116s size instead of the dexterous
+  hand meshes.</p>
+
+<footer>
+  PartyMimic builds on <a href="https://github.com/fuyichen0725/blinkmimic">BlinkMimic</a>,
+  <a href="https://github.com/Huy-Quang-Dao/instantTrack">InstantTrack</a> and
+  <a href="https://github.com/zita-ch/supermimic_vibed">supermimic_vibed</a> (SuperMimic, Liao et al., CoRL 2026), on
+  <a href="https://github.com/mujocolab/mjlab">mjlab</a> / MuJoCo Warp. Evaluation uses the
+  <a href="https://egalahad.github.io/sim2real/leaderboard/">sim2real leaderboard</a>.
+  Videos are derived from motion data that is not covered by this repository's MIT License.
+</footer>
+</main>
+<script>
+(() => {
+  const links = [...document.querySelectorAll("nav.toc a[href^='#']")];
+  const targets = links.map(a => document.getElementById(a.getAttribute("href").slice(1)));
+  const nav = document.querySelector("nav.toc");
+  const bar = matchMedia("(max-width: 1179px)");
+  let last = -1;
+  const spy = () => {
+    let k = 0;
+    targets.forEach((t, i) => { if (t && t.getBoundingClientRect().top < 140) k = i; });
+    if (bar.matches) while (k > 0 && links[k].classList.contains("sub")) k--;  // the bar shows sections only
+    links.forEach((a, i) => a.classList.toggle("on", i === k));
+    if (bar.matches && k !== last) {
+      const a = links[k];
+      nav.scrollTo({left: a.offsetLeft - (nav.clientWidth - a.offsetWidth) / 2, behavior: "smooth"});
+    }
+    last = k;
+  };
+  bar.addEventListener("change", () => { last = -1; spy(); });
+  addEventListener("scroll", spy, {passive: true});
+  spy();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,419 @@
+# PartyMimic
+
+**General humanoid motion tracking in minutes on one GPU.** PartyMimic trains one whole-body tracking policy for a
+41 h motion library on a single RTX 4090 and tracks motions it has never seen, on two humanoids (Unitree G1 and
+RoboParty RP1). This repository is the method: the training code, the data recipe (public datasets plus our own
+kneeling and crawling clips, shipped here), the RP1 retargeting, the diversity analysis and the evaluation. Two
+trained checkpoints are included.
+
+- **Fast:** 28 min of training on 1× RTX 4090 (24 GB).
+- **Diverse data:** 41 h from LAFAN1, a diversity-selected 10k subset of BONES-SEED, KungfuAthlete, XtremeMotion and
+  our own kneeling and crawling clips.
+- **Generalizes:** zero-shot on five held-out test sets (Loco, Mani, Dance, Ground, Extreme martial arts).
+- **Precise:** 21.4 mm on the held-out manipulation clips (G1), the lowest error of every method we compared.
+- **Two architectures:** an MLP reference encoder (default) or a cross-attention encoder (`--ref_enc xattn`).
+- **Two modalities:** joint-angle references (default) or the pelvis and five keypoints (`--interface sparse5`).
+- **Terrain:** `--terrain` infers the boxes, seats, stairs, walls and ladders each clip needs, checks them physically
+  and trains on them; on the full filtered BONES-SEED 99% of all clips succeed after 3,000 iterations, G1 (129,205
+  clips) in 13 min and RP1 (127,702) in 20 min on one RTX 4090, where training without terrain stays at 96.8%.
+
+PartyMimic is a model-based learner in the SuperMimic family. It fits an online MLP world model, trains the policy
+by backpropagating through 32 imagined steps of that model, and uses a critic beyond the horizon. Project page:
+[roboparty.github.io/PartyMimic](https://roboparty.github.io/PartyMimic/) ([`docs/index.html`](docs/index.html)),
+with videos, the data-diversity analysis, the recipe ablation, the SuperMimic full-factor ablation, training to
+320k iterations, a sim2real-oriented evaluation with real-robot videos, and PartyMimic under a task agent.
+
+![Mean held-out error against training compute](docs/static/hero.png)
+
+## Results on held-out motions
+
+Body position error (mm, lower is better), scored by the
+[sim2real leaderboard](https://egalahad.github.io/sim2real/leaderboard/) sim2sim evaluator (MuJoCo, every clip from
+its first frame to its end). The error is the local body position error over the tracked part of each clip, with the
+reference turned by the relative pelvis heading of robot and reference (no absolute heading). Loco, Mani, Dance and
+Ground are the MotionDecode splits; Extreme is the held-out 30% of KungfuAthlete (whole source videos held out). Mean
+is the mean of the five. Extreme success is the share of Extreme clips played to the end with the pelvis orientation
+error never above 57° for 0.2 s.
+
+| G1 | Training | Loco | Mani | Dance | Ground | Extreme | Mean | Extreme success |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SONIC (official) | 21,000 GPU-h | 28.7 | 45.5 | 48.6 | 65.7 | 87.0 | 55.1 | 74.7% |
+| Mimic Lite v1.1 (official) | 50 GPU-h | **25.0** | 28.3 | 43.3 | 93.6 | 95.4 | 57.1 | 46.8% |
+| SuperMimic | 99 min | 33.3 | 37.2 | 56.0 | 75.1 | 85.9 | 57.5 | 71.1% |
+| NablaMimic | 120 min | 32.4 | 30.2 | 47.7 | 73.4 | 79.5 | 52.6 | 67.7% |
+| BlinkMimic | 59 min | 32.4 | 30.6 | 54.6 | 66.4 | 83.3 | 53.5 | **74.8%** |
+| XMimic | 50 min | 33.8 | 30.8 | 54.5 | 63.8 | 82.8 | 53.1 | 74.5% |
+| **PartyMimic** (MLP) | **28 min** | 26.0 | **21.4** | 36.2 | 51.5 | 57.1 | 38.4 | 69.8% |
+| **PartyMimic** (attention) | 43 min | 25.1 | 21.7 | **34.7** | **51.0** | **54.4** | **37.4** | 74.4% |
+
+| RP1 | Training | Loco | Mani | Dance | Ground | Extreme | Mean | Extreme success |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SuperMimic | 99 min | 35.1 | 34.4 | 53.2 | 93.1 | 81.1 | 59.4 | 69.2% |
+| BlinkMimic | 68 min | 32.1 | 28.0 | 49.8 | 80.9 | 77.4 | 53.6 | 75.2% |
+| XMimic | 59 min | 31.2 | 28.1 | 49.3 | 81.3 | 78.1 | 53.6 | **76.5%** |
+| **PartyMimic** (MLP) | **29 min** | 22.6 | **16.3** | 33.1 | **71.5** | 52.8 | 39.3 | 68.5% |
+| **PartyMimic** (attention) | 43 min | **22.4** | 16.5 | **31.8** | 71.7 | **51.3** | **38.7** | 73.2% |
+| PartyMimic (sparse5, MLP) | 31 min | 23.8 | 19.2 | 36.5 | 76.5 | 55.4 | 42.3 | 69.0% |
+| PartyMimic (sparse5, attention) | 47 min | 23.3 | 18.5 | 35.5 | 74.0 | 55.1 | 41.3 | 73.1% |
+
+<sub>SuperMimic (the authors' code on a rebuilt mjlab interface), NablaMimic (official config), BlinkMimic (main
+preset), XMimic (BlinkMimic main in JAX) and PartyMimic were all trained by us on the same 10,745-clip library
+([Data](#data); RP1: the same clips retargeted to RP1) for 12,000 iterations (NablaMimic: its 2-hour budget), each run
+on one RTX 4090; 2-seed means. PartyMimic uses the [project-page recipe](#train). Time is training wall-clock. SONIC
+and Mimic Lite are the official policies, evaluated as released (G1 only). Completion rates and the full protocol are
+on the [project page](https://roboparty.github.io/PartyMimic/#results).</sub>
+
+## Checkpoints
+
+Two checkpoints of the [project-page recipe](#train) (MLP encoder, joint references), seed 0, 12,000 iterations,
+trained with this code; scored as in the results above:
+
+| File | Robot | Training | Loco | Mani | Dance | Ground | Extreme | Mean | Extreme success |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| [`checkpoints/g1_mlp.pt`](checkpoints/g1_mlp.pt) | G1 (`--robot g1mj`) | 31 min | 26.4 | 23.2 | 36.8 | 50.9 | 57.7 | 39.0 | 67.9% |
+| [`checkpoints/rp1_mlp.pt`](checkpoints/rp1_mlp.pt) | RP1 (`--robot rp1`) | 31 min | 22.7 | 17.3 | 33.0 | 71.7 | 53.4 | 39.6 | 66.6% |
+
+<sub>Both trained at the same time on one machine (two RTX 4090s, shared CPU), hence the longer training time.</sub>
+
+Each holds the policy, world model and critic (no optimizer state). Export for the sim2real controller (sim2sim
+and real robot), score, or fine-tune. Fine-tuning needs the options that shape the networks and the reward of the
+checkpoint's recipe (`--init` lists them when they are missing); the clip allocation is left out for a few clips:
+
+```bash
+mkdir -p deploy && uv run python tools/export_deploy_onnx.py checkpoints/g1_mlp.pt deploy/g1_mlp.onnx  # + .yaml
+SIM2REAL=<patched sim2real checkout> bash scripts/eval.sh checkpoints/g1_mlp.pt eval/g1_mlp g1    # see Evaluate
+F=(--obs_err kp --act_lag 0,0)   # the shipped checkpoints' recipe on top of the defaults
+bash scripts/train.sh logs/g1_ft --robot g1mj --motion_dir <a few clips> --init checkpoints/g1_mlp.pt "${F[@]}" --iterations 2000
+```
+
+The export checks the ONNX against the PyTorch policy on a few training clips (at least 4). Without the training
+library it uses the LAFAN1 clips for G1; for RP1 point `MOTION_DIR` at a directory of RP1 motion npz clips.
+
+## Setup
+
+Linux x86_64, an NVIDIA GPU with a CUDA 12.8 driver, and [uv](https://docs.astral.sh/uv/).
+
+```bash
+git clone git@github.com:Roboparty/PartyMimic.git partymimic && cd partymimic
+uv sync                    # mjlab, MuJoCo Warp, torch 2.9.0 (CUDA 12.8)
+tools/download_data.sh     # G1 description + 40 LAFAN1 G1 clips, RP1 meshes + MJCF, G1 MJCF of the diversity analysis
+```
+
+`download_data.sh` gets the RP1 meshes from [Roboparty/rp1_description](https://github.com/Roboparty/rp1_description)
+(pinned commit) and copies the capsule-collision MJCF of [`assets/rp1_28dof_mjlab`](assets/rp1_28dof_mjlab) next to
+them (`data/rp1_28dof_mjlab/`), which is the model PartyMimic and the evaluator simulate.
+
+## Data
+
+Every clip is public:
+
+| Dataset | Used for | Source | License |
+|---|---|---|---|
+| LAFAN1, G1 retarget | training (40 clips) | [lvhaidong/LAFAN1_Retargeting_Dataset](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset) ([LAFAN1](https://github.com/ubisoft/ubisoft-laforge-animation-dataset)) | CC BY-NC-ND 4.0 |
+| BONES-SEED, G1 retarget | training (10,000 clips) | [bones-studio/seed](https://huggingface.co/datasets/bones-studio/seed) (gated) | [BONES-SEED license](https://bones.studio/info/seed-license) |
+| KungfuAthlete, G1 | training (635 clips), Extreme test (308 clips) | [LuluCao/KungfuAthleteBot](https://huggingface.co/datasets/LuluCao/KungfuAthleteBot), [NPCLEI/KungFuAthleteBot](https://github.com/NPCLEI/KungFuAthleteBot) | Apache-2.0 |
+| Kneeling and crawling, G1 and RP1 | training (56 clips) | ours, in [`assets/motions/kneel_crawl`](assets/motions/kneel_crawl) | MIT (this repository) |
+| XtremeMotion, G1 | training (14 clips) | the curated motion subset of [Perkins729/OmniXtreme](https://github.com/Perkins729/OmniXtreme) | Apache-2.0 (the repository's license) |
+| MotionDecode | Loco / Mani / Dance / Ground tests (228 clips) | [CMRobot/MotionDecode](https://huggingface.co/datasets/CMRobot/MotionDecode), as packaged by [sim2real](https://github.com/EGalahad/sim2real) | non-commercial access terms |
+
+**G1 library.** `tools/data/build_library.sh g1` builds it from the sources (23.5 GB BONES-SEED download; accept
+its terms on Hugging Face and log in with `hf auth login` or set `HF_TOKEN`):
+
+1. LAFAN1: the 40 csv clips of `download_data.sh` to motion npz (`tools/data/prep_motions.py --format lafan`).
+2. BONES-SEED: the 10,000 clips of [`manifests/bones_seed_div10k.txt`](manifests/bones_seed_div10k.txt), 120 Hz csv
+   to 50 Hz npz. The list was selected by `tools/data/bones_subset.py` (below).
+3. KungfuAthlete: `tools/data/kungfu.py qa` scores every smoothed G1 clip (floor offset, ground and self penetration,
+   joint limits, speeds); `write` drops the failing clips, corrects the floor and writes the train split and the
+   Extreme test set of [`manifests/kungfu_split.json`](manifests/kungfu_split.json) (a 30% test share per subset and
+   style, drawn by whole source videos, so no test clip shares a video with a training clip).
+4. XtremeMotion: the one 13 MB file of OmniXtreme's curated subset (SHA-256 checked), cut at its static standing
+   frames into 14 clips (`tools/data/xtreme.py`), each once in the library (`xtreme_XX__c1`).
+5. All clips, with the 56 kneeling and crawling clips of `assets/motions/kneel_crawl/g1`, are linked into
+   `data/motions/g1_mix` (10,745 clips); the Extreme set is `data/testsets/extreme_g1`.
+
+The selection of the BONES-SEED subset can be rerun (`feat` needs BONES-SEED's `metadata/seed_metadata_v004.parquet`,
+`select` a GPU) and gives the same list:
+
+```bash
+uv run --with pyarrow python tools/data/bones_subset.py feat data/raw/bones data/raw/bones/feat.npz --meta <seed_metadata_v004.parquet>
+uv run python tools/data/bones_subset.py select data/raw/bones/feat.npz div10k.txt --n 10000
+```
+
+It clusters 1-s windows of all non-mirror clips (without clips more than 3 cm below the floor or faster than
+25 rad/s at a joint) and greedily picks clips that fill the clusters evenly, every content once before repeats.
+
+**RP1 library.** The same clips, retargeted G1 → RP1 with the robot-to-robot IK of
+[human-humanoid-tools](https://github.com/Roboparty/human-humanoid-tools) (commit `ed8b350`; `uv sync --extra all`
+in its checkout):
+
+```bash
+HHT=<human-humanoid-tools checkout> P=8 GPUS="0 1" tools/data/build_library.sh rp1
+```
+
+It writes the G1 clips as csv (`tools/data/rp1_data.py g1csv`), retargets them (`tools/data/rp1_retarget.sh`: profile
+`mimic`, Newton backend, 24 IK iterations, 50 Hz, the zero-pose calibration and the robot presets of
+[`assets/hhtools_robots`](assets/hhtools_robots)), converts the RP1 csv to npz (`data/motions/rp1_mix`), puts in the RP1 copies of the kneeling and crawling clips
+(`assets/motions/kneel_crawl/rp1`, the retargets of the page's library) and moves the
+KungfuAthlete clips to the G1 floor height (`tools/data/rp1_floor.py`; R2R leaves some jump clips 2–5 cm above the
+ground). The Extreme set is retargeted the same way (`data/testsets/extreme_rp1`). R2R takes about 8 s per clip per
+process; `P` processes run in parallel over the GPUs in `GPUS`. The RP1 copy of the MotionDecode tests:
+`HHT=... SIM2REAL=... tools/data/build_library.sh rp1_md` (into `$SIM2REAL/datasets/motiondecode_rp1`).
+
+**Full BONES-SEED (terrain training).** `tools/data/build_library.sh bones_full` extracts the 130,026 clips of
+[`manifests/bones_seed_full_f.txt`](manifests/bones_seed_full_f.txt): all G1 clips of BONES-SEED, mirrors included,
+without those more than 3 cm below the floor or faster than 25 rad/s at a joint (the filter of the subset above;
+142,220 → 130,026 clips, 264 h). It writes lean npz (joint angles and pelvis pose, 12 GB) to
+`data/motions/g1_bones_full`. `HHT=... tools/data/build_library.sh rp1_full` retargets its 65,374 originals to RP1 as
+above and writes the mirrors by RP1's mirror map (`rp1_data.py mirror`), into `data/motions/rp1_bones_full`.
+
+**Motion format.** `--motion_dir` takes a directory of `.npz` clips, each with `fps` (50), `joint_pos` `[T, J]` in
+the robot's joint order (`src/partymimic/<robot>/`), and the pelvis pose as the first body of `body_pos_w`
+`[T, B, 3]` and `body_quat_w` `[T, B, 4]` (wxyz). PartyMimic computes the other bodies by forward kinematics.
+
+## Train
+
+The defaults of `partymimic.train` are the PartyMimic recipe:
+
+```bash
+bash scripts/train.sh logs/g1_s0  --robot g1mj --motion_dir data/motions/g1_mix  --seed 0   # 12k iterations, ~26 min
+bash scripts/train.sh logs/rp1_s0 --robot rp1  --motion_dir data/motions/rp1_mix --seed 0
+# two GPUs: collection + world model on cuda:0, policy + critic on cuda:1, overlapped (1.6x the iterations per second)
+bash scripts/train.sh logs/g1_p0  --robot g1mj --motion_dir data/motions/g1_mix --seed 0 --pipeline
+```
+
+The MLP recipe fits a standard 24 GB RTX 4090: with only 24.1 GB free, G1 and RP1 runs kept their speed and peaked
+at 22.6 and 23.4 GB. Checkpoints are written every 2,000 iterations (`ckpt_002000.pt`, ...) and `last.pt`.
+
+**Options.**
+
+- The defaults are the deployment recipe: the project-page recipe's kernels, guards and end-effector terms
+  (`--std_scale 0.35 --v_clip 10 --v_clip_raw --wm_guard 5 --v_guard 5 --action_noise 0 --wrist_kernel 0.5
+  --wrist_payload 2`) plus a command lag in training (`--act_lag 1,4`), without the clip allocation and the
+  `--obs_err kp` block. The shipped checkpoints were trained with the project-page recipe below (no command lag).
+- `--ref_enc xattn`: the cross-attention reference encoder. Lower error on Dance, Ground and Extreme (tables above)
+  for 1.6x the training time. It needs more than 24 GB; on a 24 GB card add `--pi_batch 1024` (G1: 29 min).
+- `--interface sparse5`: the policy gets only the pelvis, head, wrist and ankle poses of the reference, no joint
+  angles (one command format for a person, a VR tracker set or another robot). A keypoint-to-joint network is fit to
+  the library before training and restores the reference-action skip (`--kp_skip`), with an auxiliary joint-angle
+  loss (`--kp_aux 1.0`). Export with `tools/export_deploy_onnx.py` (input `ref_kp`).
+- `--init <ckpt>`: fine-tune a trained policy on a few clips, e.g. one hard clip before it is deployed. Three
+  held-out G1 ground transitions went from 120–415 mm to 24–36 mm in 2k iterations. It does not help on short,
+  highly dynamic clips.
+
+**The project-page recipe.** The PartyMimic rows of the [project page](docs/index.html#results) were trained
+before the command lag: the defaults with `--act_lag 0,0`, plus the clip allocation and `--obs_err kp`:
+
+```bash
+# per-clip motion features for the clip allocation, once per library (RP1 runs read the G1 library's file)
+uv run python tools/motion_prior.py data/motions/g1_mix data/motions/g1_mix_prior.npz --robot g1mj
+R=(--act_lag 0,0
+   --reset_alloc lp --start_alloc lp --alloc_lambda 0.15 --alloc_last 1 --cover_win 100000000
+   --motion_prior data/motions/g1_mix_prior.npz)
+bash scripts/train.sh logs/g1_page  --robot g1mj --motion_dir data/motions/g1_mix  --seed 0 --obs_err kp "${R[@]}"
+bash scripts/train.sh logs/rp1_page --robot rp1  --motion_dir data/motions/rp1_mix --seed 0 --obs_err kp "${R[@]}"
+# attention encoder: add --ref_enc xattn; sparse5: --interface sparse5 instead of --obs_err kp
+```
+
+- Clip allocation (`--reset_alloc lp --start_alloc lp`, `spot.Cover`): 15% of the resets, and the imagination
+  starts in the same proportion, go to the 8 motion clusters (of 128) with the largest training error relative to
+  the library, weighted by a prior that favours feasible, fast-rotating motion (`tools/motion_prior.py`: clips held
+  up by an object the simulator does not have are left out).
+- Long-run guards: the critic's value is clipped to the largest return (`--v_clip 10`, with the targets computed
+  from the unclipped value, `--v_clip_raw`), and a world-model or critic update whose loss is more than 5x its
+  running mean is skipped (`--wm_guard 5 --v_guard 5`); they keep runs far beyond 12k iterations from degrading.
+  `--action_noise 0` collects with the deterministic policy.
+- End effectors: an extra wrist-position kernel in the reward (`--wrist_kernel 0.5`), a payload of up to 2 kg at
+  each wrist that the policy does not observe (`--wrist_payload 2`, drawn once per env, none in 25% of them) and, on
+  the joint interface, the wrist / ankle / head error block that sparse5 observes (`--obs_err kp`, computed inside
+  the exported ONNX from the same inputs). Under a 2 kg payload they cut the wrist error by about two thirds.
+- Command lag (default `--act_lag 1,4`): each control step the new joint targets reach the actuators 1–4 physics
+  substeps (5–20 ms) late, drawn per env. A topic-based deployment stack (the sim2real ZMQ pipeline: 5–25 ms random
+  latency) otherwise amplifies the policy's chatter and foot slip, most with the end-effector terms. RP1, 12k
+  iterations, 2 seeds, MotionDecode manipulation under the slow-host latency (actions 10–20 ms late, states 5–10 ms
+  old): the project-page recipe has ankle chatter 1.40° (high-frequency ankle-pitch RMS, 90th percentile over clips),
+  joint-target jerk 109 rad/s² and foot slip 3.75 cm/s; the command lag alone brings them to 0.63°, 33 and 1.42 cm/s; the defaults (lag,
+  no clip allocation, no `--obs_err kp`) on the mirrored and screened library to 0.39°, 27 and 1.03 cm/s, the same as
+  without latency (0.32°, 24, 0.98 cm/s). Over all four splits the defaults keep jerk 113 and slip 6.7 cm/s under
+  that latency against 350 and 13.3 cm/s for the project-page recipe ([page: Sim2real](docs/index.html#sim2real)).
+
+`uv run python -m partymimic.train -h` lists the remaining options.
+
+## Terrain: the full BONES-SEED
+
+Many clips are performed on something: a 50 cm box, a chair, stairs, a wall, a ladder. On flat ground they cannot be
+tracked. `--terrain` gives every clip the static boxes it needs:
+
+```bash
+tools/data/build_library.sh bones_full                       # data/motions/g1_bones_full, 130,026 clips
+bash scripts/train.sh logs/g1_terrain --robot g1mj --motion_dir data/motions/g1_bones_full --terrain \
+  --iterations 200000 --ckpt_every 10000
+# every clip once from its first frame, in chunks of worlds (the evaluation protocol of tools/eval_batch.py)
+uv run python tools/eval_chunks.py --ckpt logs/g1_terrain/ckpt_010000.pt --motion_dir data/motions/g1_bones_full \
+  --out eval/g1_terrain_010000.json
+```
+
+- **Inferred terrain, checked.** When `<motion_dir>/terrain.json` is missing, training first runs
+  `partymimic.terrain_infer` (3–4 min for 130k clips on 24 processes; alone:
+  `python -m partymimic.terrain_infer --robot g1mj --motion_dir <dir> [--dry_run]`). It plays every clip through the
+  robot's own MJCF and reads the supports off its contacts: a still foot raised above the floor (boxes, steps),
+  the pelvis resting with the center of mass outside the feet (seats), the back or hands against something
+  (walls, tables), feet and hands raised together (ladders), more than two step heights (a staircase). Each clip
+  then gets up to 16 boxes, and a physical check: no body inside a box, and no stretch of more than 0.8 s with the
+  lowest point off the floor that does not rest on a box top. The clips that fail are moved to `<motion_dir>_dropped`
+  and never trained; `terrain_report.json` lists every inferred support and its result. It uses only the robot's
+  model, so G1 and RP1 libraries go through the same code: on the full library it drops 743 G1 clips (0.57%) and
+  1,346 RP1 clips (1.04%; R2R's retargets float more often).
+- **Who sees it.** The simulator places the clip's boxes at every reset. The world model and the critic get an
+  11 × 5 height scan around the robot (1.5 m along the heading, 0.6 m across), so imagined steps follow the terrain;
+  the policy stays blind and reads the terrain from its reference alone, so the deployed inputs are unchanged.
+  `--terrain_soft 0.03` gives the scanned box edges a 3 cm sigmoid width, so the scan has gradients along the ground
+  as well (contacts and rewards keep the hard boxes).
+- **Memory.** Above 20M reference frames the tracked-body states are recomputed by forward kinematics from the root
+  and joints instead of stored (`PM_LAZY_FK=0/1` forces it): the full library would otherwise take about 62 GB. A G1
+  terrain run reserves 26.3 GB (24.8 GB without terrain): a 48 GB card.
+
+G1, full filtered BONES-SEED (129,205 clips after the check, 4,902 with terrain), seed 0, one RTX 4090, every
+checkpoint on every clip:
+
+| Iterations | Training | All clips | Terrain clips | 50 cm box | Chair / sit | Stairs | Ladder | Wall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 8 min | 96.62% | 46.6% | 33.3% | 89.6% | 0.0% | 20.5% | 100% |
+| 3,000 | 13 min | **99.05%** | 89.1% | 91.0% | 96.8% | 13.8% | 20.5% | 100% |
+| 10,000 | 29 min | 99.34% | 92.6% | 93.3% | 98.1% | 44.8% | 27.3% | 100% |
+| 50,000 | 2.1 h | 99.69% | 96.0% | 97.5% | 98.6% | 53.4% | 20.5% | 100% |
+| 170,000 | 6.8 h | **99.80%** | 97.2% | 98.6% | 98.7% | 70.7% | 25.0% | 100% |
+| 200,000 | 7.9 h | 99.60% | 97.3% | 98.1% | 99.3% | 77.6% | 25.0% | 100% |
+
+All clips stay at or above 99% from the 3,000-iteration checkpoint on. Without `--terrain` the same code stays at
+96.5–96.8% from 2k to 30k iterations; on the same 129,205 clips that is 96.96% at 30k, and 26.4% of the terrain
+clips, against 99.65% and 94.8% with terrain at 30k. The stairs (58 clips) and ladders (44) remain the hard part:
+the ladder is a crude model (rungs and rails at the heights the hands and feet rest), and the policy cannot see
+where the next step is. For reference, the SuperMimic paper reports 25 failed clips of 129,514 after 3 h of
+training, under its own setup and evaluation; we have not reproduced that protocol.
+
+RP1, full BONES-SEED retargeted by R2R (127,702 clips after the check, 4,934 with terrain), same command with
+`--robot rp1`:
+
+| Iterations | Training | All clips | Terrain clips | 50 cm box | Chair / sit | Stairs | Ladder | Wall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1,000 | 15 min | 96.69% | 42.9% | 27.8% | 82.7% | 6.3% | 23.3% | 100% |
+| 3,000 | 20 min | **99.01%** | 83.8% | 81.7% | 96.2% | 6.3% | 23.3% | 100% |
+| 10,000 | 37 min | 99.34% | 90.8% | 90.7% | 97.4% | 56.3% | 23.3% | 100% |
+| 40,000 | 1.8 h | 99.50% | 92.6% | 92.2% | 98.9% | 56.3% | 23.3% | 100% |
+| 100,000 | 4.3 h | **99.57%** | 93.5% | 93.2% | 98.9% | 62.5% | 23.3% | 100% |
+
+RP1 first reaches 99% at 3,000 iterations and stays there from 80k on (70k dips to 98.1% on fast jogging turns,
+recovered at 80k). Both runs used an earlier version of the check (821 G1 and 2,324 RP1 clips dropped); the
+current check drops 743 and 1,346.
+
+## Evaluate, export, visualize
+
+```bash
+# sim2real leaderboard protocol (ONNX + deploy YAML, MuJoCo CPU sim2sim on the four MotionDecode splits)
+SIM2REAL=<checkout of github.com/EGalahad/sim2real> bash scripts/eval.sh logs/g1_s0/ckpt_012000.pt eval/g1_s0 g1
+# the Extreme set (any any4hdmi dataset directory)
+SET=data/testsets/extreme_g1 SIM2REAL=... bash scripts/eval.sh logs/g1_s0/ckpt_012000.pt eval/g1_s0 g1
+# side-by-side videos of the median clip per split: robot solid, reference ghost, both at global poses
+MUJOCO_GL=egl python tools/sim2sim_video.py eval/g1_s0 g1 <robot MJCF> videos --sim2real <sim2real checkout>
+```
+
+Apply [`tools/sim2real.patch`](tools/sim2real.patch) to the sim2real checkout first (`git apply`, tested on its
+commits `287ac15` and `4a777c8`). It adds the observation terms the PartyMimic deploy YAML reads
+(`supermimic.*`: proprioceptive history, reference joints and root, root orientation history) and, for RP1, the
+robot config (limits, armatures, standing pose, joint friction) and RP1's tracked bodies in the metrics; G1 scoring
+is unchanged. `scripts/eval.sh ... rp1` points it at `data/rp1_28dof_mjlab` and the RP1 test sets.
+
+Also included: `tools/eval_batch.py` and `tools/eval_metrics.py` for fast in-simulator evaluation on the training
+clips, and `tools/export_onnx.py` / `tools/play_onnx.py` for a single-motion ONNX in the BeyondMimic layout.
+
+## Diversity analysis
+
+`tools/diversity` measures how much of a library is distinct motion and how new each test set is
+([page](docs/index.html#data)). Each 1-s window is described by heading-invariant root, joint and hand / foot
+kinematics, z-scored and projected to 32 PCA dimensions, and the library is clustered into 2,000 motion clusters
+(`datacard/`). Per source it reports clips, hours and the effective number of motion types (exponential of the
+cluster entropy); for the cumulative mixes, the share of each test set's windows that lie within the median
+cross-source distance of a training window.
+
+```bash
+uv run --with scikit-learn python tools/diversity/analyze.py work/div out/div \
+  --source lafan:LAFAN1=data/motions/g1/lafan --source bones:BONES-SEED=data/motions/g1/bones \
+  --source kungfu:KungfuAthlete=data/motions/g1/kungfu \
+  --md <sim2real>/datasets/motiondecode --test Extreme=data/testsets/extreme_g1
+uv run --with scikit-learn python tools/diversity/figure.py work/div out/div out/div/data.png
+```
+
+## Speed on LAFAN (XMimic's benchmark)
+
+[XMimic](https://github.com/nico-bohlinger/xmimic)'s protocol on our RTX 4090s: all runs train on its 40 LAFAN1 clips
+(SHA-256 checked) and are scored on the same clips, 4 replicas every 100 iterations, 3 seeds. Minutes to
+BlinkMimic's target; compilation excluded by XMimic's rule, added back in the start-up column.
+
+| Method | GPUs | it/s | Return ≥ 0.82 | + 0 failed, held ×3 | Held, with start-up | Return at 3,500 it |
+|---|---:|---:|---:|---:|---:|---:|
+| BlinkMimic (main) | 1 | 7.8 | 2.93 | 3.45 | 3.62 | 0.865 |
+| XMimic | 1 | 9.3 | 2.32 | 3.71 | 3.96 | 0.860 |
+| **PartyMimic** | 1 | 8.2 | 2.45 | 5.17 | 5.57 | **0.883** |
+| XMimic (actor \| learner) | 2 | 13.2 | 1.71 | **2.89** | **3.17** | 0.863 |
+| **PartyMimic** (`--pipeline`) | 2 | 12.7 | **1.66** | 3.41 | 3.82 | **0.883** |
+
+PartyMimic reaches return 0.82 in the fewest iterations and ends highest. It is slower to zero failures: one or two
+hard training clips keep failing for a while; BlinkMimic and XMimic search for those clips with evaluation probes,
+which PartyMimic dropped because they did not improve held-out tracking.
+
+## The recipe
+
+What matters most, measured by the change in G1 held-out Loc/Man error when a factor is removed (ablations on an
+earlier 9,173-clip library; the [page](docs/index.html#recipe) explains each factor):
+
+| Factor | Setting | Effect when removed |
+|---|---|---|
+| Muon for policy and world model | `--pi_opt muon --wm_opt muon` | Adam instead: +10.7 mm |
+| Muon weight decay | `--muon_wd 0.1` | five-set mean +2.4 mm |
+| Tracking-reward kernels | `--std_scale 0.35` | 0.6: within noise; 1.0: +5.5 mm |
+| 32-step imagination | `--horizon 32` | 16 steps: +5.9 mm |
+| Reference-action skip | `--pi_ref_skip` | +5.6 mm |
+| Policy EMA | `--pi_ema 0.995` | +3.4 mm |
+| Evaluator's collision model | `--robot g1mj` | LAFAN falls 14/40 instead of 3/40 |
+| Value-gradient consistency | `--v_gcons 0.5` | +1.0 mm |
+| Diversity-balanced resets | `--div_k 24` | Ground +6–19 mm |
+| Self-imitation | `--sil 1` | +0.5 mm early in training |
+
+Of the official SuperMimic design choices ported onto this recipe, only `--muon_wd 0.1` clearly helps tracking.
+Widening the kernels from 0.35 to 0.6 keeps the five-set mean within noise and reduces foot slip under soft contact
+and other unseen perturbations ([page: Sim2real](docs/index.html#sim2real)); the command lag removes most of that
+slip at 0.35, so the defaults keep 0.35. The shipped checkpoints were trained without the lag; retrain for the new
+defaults.
+
+## Citation
+
+If you use PartyMimic in research or products, please cite this repository, along with the methods and datasets you rely on (see [Attribution and license](#attribution-and-license) and [Data](#data)).
+
+```bibtex
+@software{partymimic2026,
+  title        = {PartyMimic: general humanoid motion tracking in minutes on one GPU},
+  author       = {jaggerShen and PartyMimic contributors},
+  year         = {2026},
+  url          = {https://github.com/Roboparty/PartyMimic},
+  license      = {MIT}
+}
+```
+
+## Attribution and license
+
+PartyMimic is derived from [BlinkMimic](https://github.com/fuyichen0725/blinkmimic), which builds on
+[supermimic_vibed](https://github.com/zita-ch/supermimic_vibed) and
+[InstantTrack](https://github.com/Huy-Quang-Dao/instantTrack). All three are MIT-licensed; their notices are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Methods: SuperMimic (Liao et al., arXiv:2610.28480, 2026), SHAC (Xu et al., 2022), BeyondMimic (Liao et al., 2025)
+and Muon (Jordan et al., 2024).
+Simulation: [mjlab](https://github.com/mujocolab/mjlab) and [MuJoCo Warp](https://github.com/google-deepmind/mujoco_warp).
+Retargeting: [human-humanoid-tools](https://github.com/Roboparty/human-humanoid-tools) (Apache-2.0).
+Robots: Unitree G1 ([unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco), BSD-3-Clause) and RoboParty RP1
+([rp1_description](https://github.com/Roboparty/rp1_description)).
+
+Code: MIT ([LICENSE](LICENSE)). The checkpoints, videos and built motion libraries are derived from the motion
+datasets above and follow their licenses (LAFAN1: CC BY-NC-ND 4.0; BONES-SEED: its own license; KungfuAthlete and
+XtremeMotion: Apache-2.0; MotionDecode: non-commercial terms); they are not covered by the MIT License. The kneeling
+and crawling clips in `assets/motions/kneel_crawl` are ours, under the MIT License. Dataset sources and terms:
+[Data](#data) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
