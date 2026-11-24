@@ -1,5 +1,12 @@
 # PartyMimic
 
+<p align="center">
+  <a href="https://roboparty.github.io/PartyMimic/"><img src="docs/static/cover.gif" width="100%" alt="PartyMimic: a general, fast-to-train humanoid low-level controller, built for agents"></a>
+</p>
+<p align="center">
+  <a href="https://roboparty.github.io/PartyMimic/"><img src="https://img.shields.io/badge/Project_Page-roboparty.github.io%2FPartyMimic-1f5fbf?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Project page"></a>
+</p>
+
 **General humanoid motion tracking in minutes on one GPU.** PartyMimic trains one whole-body tracking policy for a
 41 h motion library on a single RTX 4090 and tracks motions it has never seen, on two humanoids (Unitree G1 and
 RoboParty RP1). This repository is the method: the training code, the data recipe (public datasets plus our own
